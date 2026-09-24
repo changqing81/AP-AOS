@@ -2,6 +2,11 @@ name: rootfs
 
 on:
   workflow_dispatch:
+    inputs:
+      build_apk:
+        description: '同时构建 debug APK（产物很大，约 850MB；本地无 Android 工具链时用这个）'
+        type: boolean
+        default: false
   push:
     paths:
       - 'rootfs/**'
@@ -61,4 +66,76 @@ jobs:
             dist/BUILD_MANIFEST
             dist/SIZE_REPORT.txt
             dist/DEP_USAGE.txt
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # debug APK：把刚烘好的 rootfs 打进 assets，跑 gradlew :app:assembleDebug
+  #
+  # 为什么放 CI：本机（开发机）没有 Android SDK/NDK/CMake 工具链，构不了 APK。
+  # 为什么默认不跑：产物很大（rootfs.tar.xz 770MB + APK 体量相当），
+  # 每次 push 都产会把 artifact 配额吃光 —— 故 gate 在 workflow_dispatch + build_apk=true。
+  #
+  # 关键点：
+  #   - fetch-depth: 0 —— versionCode 由 gitVersionCode() 数 commit 得出
+  #     （GitVersion.kt 注释明说 "the build fails without a git checkout"）；
+  #     默认浅克隆 depth=1 会把 versionCode 数成 1。
+  #   - CMake 3.22.1 是 app/build.gradle.kts 里写死的版本，必须装。
+  #   - NDK 用 AGENTS.md 记载的 28.2（本机工具链同款）；未显式 pin ndkVersion，
+  #     由 AGP 取默认，装 28.2 系列即可。
+  # ---------------------------------------------------------------------------
+  apk:
+    name: apk (debug)
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_apk }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout (full history for versionCode)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install CMake 3.22.1 + NDK 28.2
+        run: |
+          set -x
+          sdkmanager --install "cmake;3.22.1" "ndk;28.2.13676358"
+          # 装不上就打印可用清单，方便定位版本号漂移
+          sdkmanager --list_installed | grep -Ei 'cmake|ndk' || true
+
+      - name: Download rootfs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rootfs
+          path: rootfs-dist
+
+      - name: Stage rootfs into app assets
+        run: |
+          ls -la rootfs-dist
+          test -s rootfs-dist/rootfs.tar.xz || { echo "::error::rootfs.tar.xz 缺失或为空"; exit 1; }
+          cp rootfs-dist/rootfs.tar.xz app/app/src/main/assets/rootfs/rootfs.tar.xz
+          cp rootfs-dist/BUILD_MANIFEST app/app/src/main/assets/rootfs/BUILD_MANIFEST
+          ls -la app/app/src/main/assets/rootfs/
+
+      - name: Build debug APK
+        run: |
+          cd app
+          ./gradlew --no-daemon :app:assembleDebug --console=plain
+
+      - name: Report APK
+        run: ls -la app/app/build/outputs/apk/debug/
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-debug
+          path: app/app/build/outputs/apk/debug/*.apk
           retention-days: 14
