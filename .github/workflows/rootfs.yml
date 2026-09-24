@@ -168,6 +168,11 @@ jobs:
         run: |
           df -h /
           cd app
+          # gradlew 的可执行位在 Windows 上提交时会丢失 —— 本仓 git 索引里它是 100644
+          # （全仓 100755 文件数为 0），checkout 到 Linux 后 `./gradlew` 直接报
+          # "Permission denied"（exit 126，见 run 35994212718）。
+          # 此处显式补位；仓库侧同时已把该文件改为 100755 治本。
+          chmod +x gradlew
           ./gradlew --no-daemon :app:assembleDebug --console=plain
 
       - name: Report APK

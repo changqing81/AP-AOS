@@ -4,6 +4,22 @@
 > **历史坑点（m0 阶段，全真机实证）见 `m0-archive/docs/debug.md` 与 `m0-archive/docs/devlog/`。** 高频索引：
 > WebView `vh` 塌缩（注入 innerHeight 修复）｜幻影进程查杀（`max_phantom_processes` / `settings_enable_monitor_phantom_procs`）｜mDNS `_adb-tls-connect` 端口过期但广播残留｜MaaFW PP-OCR 对 2D 单通道静默返空（堆叠 3ch）｜MaaFW 截图 BGR↔ALAS RGB 翻转｜RUN_COMMAND 权限只授清单声明方｜`am force-stop` 杀不掉 shell uid 残留（须显式 kill）｜桥 30s 无流量判死（10s 心跳）。
 
+## [2026-09-24] gradlew 在 Windows 上提交会丢可执行位：CI 检出后 `./gradlew` 直接 exit 126
+
+- **现象**：`apk` job 走到第 9 步 `Build debug APK`，47 秒即挂，日志只有两行：
+  ```
+  ./gradlew: Permission denied
+  ##[error]Process completed with exit code 126.
+  ```
+  而它前面的 `Set up Android SDK`（上一条刚修好）、rootfs artifact 下载、拷进 assets 全部 ✅ —— 唯独 Gradle **一个字符都没跑**。
+- **根本原因**：`app/gradlew` 在 **git 索引里的 mode 是 `100644`（无可执行位）**。Windows 侧 Git 不保存 Unix 可执行位（`core.filemode=false`），本地 `ls -l` 显示 `-rwxr-xr-x` 是**假象**；checkout 到 Linux runner 后恢复成 644 → `./gradlew` 不可执行。实测本仓 **100755 文件数为 0**（连 `.sh` 也没有，只是它们都由 `bash xxx.sh` 显式调用，所以一直没暴露）。
+- **解决方案**：
+  1. **治本**：`git update-index --chmod=+x app/gradlew`（索引 mode → 100755），随提交入库；
+  2. **加固**：workflow 的 `Build debug APK` 步骤里加 `chmod +x gradlew`（对抗任何 checkout 差异）。
+- **判据**：`git ls-files -s <file>` 第一列即索引 mode，`100644` = 不可执行。批量体检：
+  `git ls-files -s | awk '$1=="100644" && $4 ~ /\.(sh|gradlew)$/'`。
+- **教训**：Windows 上写的、由 Linux 执行的「入口脚本」（`gradlew` / `*.sh` / 二进制）必须显式检查索引 mode；**本地能跑不代表 CI 能跑**，可执行位是跨平台提交时最容易被静默丢掉的一位。
+
 ## [2026-09-24] 「删掉配置」不等于「改掉行为」：action 默认值会接手（`sdkmanager tools` 两轮同死）
 
 - **现象**：CI 的 `apk` job 连续两轮死在**完全相同**的位置——第 5 步「Set up Android SDK」：
