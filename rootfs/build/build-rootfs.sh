@@ -300,13 +300,31 @@ VENV_PY_VER="$(chroot_run "$GUEST_PYTHON" -c 'import platform; print(platform.py
 log "venv python: $VENV_PY_VER（$GUEST_VENV，软链 $GUEST_VENV_LINK）"
 
 # ---------- 7. 应用本仓资产（宿主侧拷入 $ROOTFS_DIR/opt/alas） ----------
-# m0 补丁集：module/ 与 assets/ 子树整层覆盖上游同名文件
-cp -rf "$ASSETS/patches/module/." "$ROOTFS_DIR/opt/alas/module/"
-cp -rf "$ASSETS/patches/assets/." "$ROOTFS_DIR/opt/alas/assets/"
-
-# assets_fix.py 改的是 **上游树内** 文件（argv[1]=上游根目录）：按 Button 名就地重写
-# module/*/assets.py 里的 cn area/color/button，非整文件覆盖（上游资产更新后可重放）
-python3 "$ASSETS/patches/assets_fix.py" "$ROOTFS_DIR/opt/alas"
+# ⚠️ 关键区分：本仓 patches/module/ 是 **ALAS 时代的「整文件覆盖」补丁**
+# （connection.py 1267 行 / screenshot.py / control.py / app_control.py / base.py /
+#  minitouch.py / method/utils.py / map_detection/utils.py / webui/patch.py / webui/utils.py）。
+# 它们是**对着 ALAS 上游写的整份文件副本**，直接盖到 AzurPilot 上会回退上游实现、
+# 引用不存在的 API —— 等于把上游改坏（见 docs/upstream-swap-azurpilot.md §1.3 形态④）。
+#
+# 按 flavor 分流：
+#   - flavor=alas：维持旧行为（整层覆盖）
+#   - azurpilot*：**只装纯新增的文件**。`module/device/method/alasaos.py` 是自包含的
+#     桥客户端（不吃上游版本，纯新增）；其余整文件补丁一律不装。
+#     桥接集成（Screenshot/Control/AppControl 的 MRO 混入 + 方法分派 + Connection 短路）
+#     必须按 AzurPilot 源码**重新派生**，那是 M2 的工作。
+if [[ "$UPSTREAM_FLAVOR" == "alas" ]]; then
+  cp -rf "$ASSETS/patches/module/." "$ROOTFS_DIR/opt/alas/module/"
+  cp -rf "$ASSETS/patches/assets/." "$ROOTFS_DIR/opt/alas/assets/"
+  # assets_fix.py 改的是上游树内文件（argv[1]=上游根）：按 Button 名就地重写，非整文件覆盖
+  python3 "$ASSETS/patches/assets_fix.py" "$ROOTFS_DIR/opt/alas"
+else
+  install -D -m 0644 "$ASSETS/patches/module/device/method/alasaos.py" \
+    "$ROOTFS_DIR/opt/alas/module/device/method/alasaos.py"
+  log "azurpilot：只装 alasaos.py（纯新增，不覆盖上游）"
+  log "azurpilot：ALAS 整文件补丁【未装】——它们会回退/改坏 AzurPilot 上游实现"
+  log "TODO(M2)：桥接集成（MRO 混入 + 方法分派 + Connection 短路）需按 AzurPilot 源码重新派生"
+  log "azurpilot：assets_fix.py 未重放（其 FIXES 表针对 ALAS 资产，上游素材版本不同）"
+fi
 
 # OCR：**flavor 相关，不能一刀切覆盖**（见 docs/upstream-swap-azurpilot.md §11）
 # - flavor=alas：用 m0 的 in-proc onnxruntime 版 rpc.py 顶掉上游——ALAS 原生 OCR 依赖
@@ -413,6 +431,52 @@ print('cv2', cv2.__version__, '| numpy', numpy.__version__, '| scipy', scipy.__v
 print('pydantic', pydantic.VERSION, '| pywebio', pywebio.__version__, '| onnxruntime', onnxruntime.__version__)
 print('jellyfish shim check:', jellyfish.levenshtein_distance('abc', 'abd') == 1)
 print('ALL_IMPORTS_OK')
+PY
+
+# 深层 import 冒烟（新增，重要）：上面那个门禁只碰**第三方库**，碰不到上游自身的
+# 模块链——首版正是因此漏掉了「ALAS 整文件补丁把上游改坏」这类问题（浅门禁照样
+# ALL_IMPORTS_OK，而实际 rootfs 是坏的）。这里 import 上游真实入口链：
+# 调度器 → 设备链（拉 connection/screenshot/control/app_control）→ OCR → 配置生成。
+# HARD 组失败即构建失败；SOFT 组只报告（WebUI/可选功能不应阻断烘焙，但要可见）。
+chroot_run "$GUEST_PYTHON" - <<'PY'
+import importlib
+import os
+import sys
+
+ROOT = '/opt/alas'
+os.chdir(ROOT)
+sys.path.insert(0, ROOT)
+
+HARD = ['alas', 'module.device.device', 'module.ocr.al_ocr', 'module.config.config_updater']
+SOFT = ['module.webui.app', 'module.device.method.alasaos']
+
+
+def probe(mod):
+    try:
+        importlib.import_module(mod)
+        return True, 'OK'
+    except Exception as e:
+        return False, f'{type(e).__name__}: {str(e)[:160]}'
+
+
+fail = []
+print('[deep] HARD 组')
+for m in HARD:
+    ok, info = probe(m)
+    print(f'  {"OK  " if ok else "FAIL"} {m:38} {info}')
+    if not ok:
+        fail.append(f'{m}: {info}')
+print('[deep] SOFT 组')
+for m in SOFT:
+    ok, info = probe(m)
+    print(f'  {"OK  " if ok else "MISS"} {m:38} {info}')
+
+if fail:
+    print('::error::深层 import 冒烟失败（上游模块链被改坏或依赖缺失）:')
+    for f in fail:
+        print(f'  - {f}')
+    raise SystemExit(1)
+print('DEEP_IMPORTS_OK')
 PY
 
 # 优先用 GITHUB_SHA（checkout 的那个 commit）；本地兜底走 git——脚本已 sudo 提权为 root，
