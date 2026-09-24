@@ -416,7 +416,18 @@ trim_payload() {
   rm -rf "$root/bin/DroidCast" "$root/bin/MaaTouch" "$root/bin/ascreencap" \
          "$root/bin/hermit" "$root/bin/scrcpy"
   # 非运行时目录（仅 Electron 启动器/开发/文档用）
+  # ⚠️ 例外：doc/ 与 log/commission_rewards/ 必须保留**目录本身**。
+  # 上游 module/webui 启动时把三者挂成 StaticFiles：
+  #   {'/static/assets': /opt/alas/assets,
+  #    '/static/doc': /opt/alas/doc,
+  #    '/static/commission_rewards': /opt/alas/log/commission_rewards}
+  # 而 StaticFiles 对「目录不存在」是**硬报错**（starlette/staticfiles.py:56）：
+  #   RuntimeError: Directory '/opt/alas/doc' does not exist
+  # → gui.py 秒退 exit 1 → wrapper 无限重拉，WebUI 永远起不来。
+  # 2026-09-24 真机日志实证（session.log 里 gui.py 反复退出、gui.txt 里该 RuntimeError）。
+  # 内容可删，目录必须留 —— 体积代价约 0。
   rm -rf "$root/webapp" "$root/doc" "$root/wallpapers" "$root/tests" "$root/dev_tools"
+  mkdir -p "$root/doc" "$root/log/commission_rewards"
   rm -rf "$root/.github" "$root/.agent" "$root/.claude" "$root/.cursor"
   rm -f  "$root/AGENTS.md" "$root/CLAUDE.md" "$root/.cursorignore" "$root/.dockerignore" \
          "$root/docker-compose.yml" "$root/Dockerfile" \
