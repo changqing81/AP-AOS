@@ -362,6 +362,13 @@ class ProotHost(
 
     /** assets_fix：幂等 + 漂移自检（Button 找不到会非零退出），失败只记警告 */
     private suspend fun runAssetsFix() {
+        // assets_fix.py 的 FIXES 表针对 **ALAS 资产**；azurpilot flavor 下不铺该文件
+        // （见 AlasOverlay.AZURPILOT_MAPPINGS）。文件不在就直接跳过，免得每启动一次
+        // 刷一条 "assets_fix drift detected" 假告警，把真正的漂移信号淹掉。
+        if (!File(alasDir, "seeds/assets_fix.py").isFile) {
+            Timber.i("assets_fix 未铺（非 alas flavor），跳过")
+            return
+        }
         val r = runGuest(listOf(GUEST_PYTHON, "seeds/assets_fix.py", GUEST_ALAS_ROOT), SHORT_EXEC_MS)
             ?: return
         if (r.exit == 0) {
