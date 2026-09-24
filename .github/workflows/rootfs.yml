@@ -60,4 +60,5 @@ jobs:
             dist/rootfs.tar.xz
             dist/BUILD_MANIFEST
             dist/SIZE_REPORT.txt
+            dist/DEP_USAGE.txt
           retention-days: 14

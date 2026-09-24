@@ -477,32 +477,85 @@ done
 
 rm -rf "$ROOTFS_DIR/opt/alas/.git"
 find "$ROOTFS_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-rm -rf "$ROOTFS_DIR/root/.cache" "$ROOTFS_DIR/var/lib/apt/lists"/*
+# /var 首跑占 208MB（原因待查）——把 apt 缓存/日志/临时目录一并清掉再量。
+# 注意：这里已过 cleanup_mounts，**不能再 chroot**（无 /proc /sys /dev），
+# 所以全部用宿主侧 rm；apt-get clean 的等价物就是删 /var/cache/apt。
+rm -rf "$ROOTFS_DIR/var/lib/apt/lists"/* "$ROOTFS_DIR/var/cache/apt"/* \
+       "$ROOTFS_DIR/var/log"/* "$ROOTFS_DIR/var/tmp"/* \
+       "$ROOTFS_DIR/root/.cache" "$ROOTFS_DIR/tmp"/*
 
 # ---------- 9.5 体积分解报告（打包前） ----------
-# 首跑（run #35984307419）rootfs.tar.xz 达 **807MB**，远超 400MB 告警线（目标 ~250MB）。
-# 打包前先看清大头在哪，否则裁剪是瞎猜。报告进日志，也落 dist/ 随 artifact 上传。
+# 首跑（run #35985087081）实测 rootfs.tar.xz = **808MB**（目标 ~250MB、告警线 400MB），
+# 未压缩总计 2279MB，其中 **venv 独占 1045MB**（远大于 bin/ 的 223MB）——
+# 凭估算裁剪的方向完全错了。故本报告 + 依赖可达性探针是后续裁剪的唯一依据。
 report_size() {
   local out="$DIST_DIR/SIZE_REPORT.txt"
   {
-    echo "=== rootfs 体积分解（打包前，已剔除 .git 与 __pycache__）==="
+    echo "=== rootfs 体积分解（打包前，已剔除 .git / __pycache__ / apt 缓存）==="
     echo "--- 总计 ---"
     du -sm "$ROOTFS_DIR"
     echo
-    echo "--- /opt/alas 顶层（前 25）---"
-    du -sm "$ROOTFS_DIR/opt/alas"/* 2>/dev/null | sort -rn | head -25
+    echo "--- /opt 顶层 ---"
+    du -sm "$ROOTFS_DIR/opt"/* 2>/dev/null | sort -rn
     echo
-    echo "--- venv 总计 ---"
-    du -sm "$ROOTFS_DIR/opt/alas-venv" 2>/dev/null
-    echo "--- venv site-packages（前 25）---"
-    du -sm "$ROOTFS_DIR/opt/alas-venv"/lib/python*/site-packages/* 2>/dev/null | sort -rn | head -25
+    echo "--- /opt/alas 顶层（前 15）---"
+    du -sm "$ROOTFS_DIR/opt/alas"/* 2>/dev/null | sort -rn | head -15
     echo
-    echo "--- 其余顶层目录 ---"
-    du -sm "$ROOTFS_DIR"/* 2>/dev/null | sort -rn | head -15
+    echo "--- venv site-packages（前 30）---"
+    du -sm "$ROOTFS_DIR/opt/alas-venv"/lib/python*/site-packages/* 2>/dev/null | sort -rn | head -30
+    echo
+    echo "--- /var 与 /usr 顶层 ---"
+    du -sm "$ROOTFS_DIR/var"/* 2>/dev/null | sort -rn | head -10
+    du -sm "$ROOTFS_DIR/usr"/* 2>/dev/null | sort -rn | head -8
   } | tee "$out"
   log "体积分解报告已写入: $out"
 }
 report_size
+
+# ---------- 9.6 依赖可达性探针 ----------
+# 回答「哪些大包可以安全删」：扫描上游源码里每个候选包的 import 出现次数。
+# 0 次 ⇒ 大概率可删（但要过 §11.1 那条红线：删错会让 OCR 初始化抛
+# RequestHumanTakeover）。结果进日志与 artifact，作为 aggressive 裁剪的依据。
+probe_dep_usage() {
+  local out="$DIST_DIR/DEP_USAGE.txt"
+  # 宿主侧直读——只扫源码文件，不需要 chroot（此时挂载已卸，chroot 反而不安全）。
+  # 用宿主 python3；路径通过环境变量传进去。
+  AP_ROOT="$ROOTFS_DIR$GUEST_ALAS_ROOT" python3 - <<'PY' | tee "$out"
+import os
+import pathlib
+import re
+
+SRC = pathlib.Path(os.environ['AP_ROOT'])
+CANDIDATES = [
+    'numba', 'llvmlite', 'av', 'aiortc', 'matplotlib', 'imageio_ffmpeg',
+    'imageio', 'ncnn', 'rapidocr', 'onnxruntime', 'zerorpc', 'zmq', 'gevent',
+    'psutil', 'watchdog', 'openai', 'mcp', 'sse_starlette', 'uvloop',
+    'Crypto', 'cryptography', 'pylibsrtp', 'fontTools', 'uiautomator2',
+    'adbutils', 'websockets', 'pypresence', 'onepush', 'lz4', 'pandas',
+    'sympy', 'networkx', 'requests', 'aiohttp', 'torch',
+]
+# 只扫上游源码（跳过 venv 自身与我们的 overlay 副本）
+files = [p for p in SRC.rglob('*.py')
+         if 'site-packages' not in p.parts and '.venv' not in p.parts]
+print(f'扫描 {len(files)} 个 .py 文件（上游源码树）')
+print(f'{"import 名":22} {"命中文件数":>10}  样例')
+print('-' * 78)
+for name in CANDIDATES:
+    pat = re.compile(rf'^\s*(?:from\s+{re.escape(name)}(?:\.|\s)|import\s+{re.escape(name)}(?:\s|\.|,|$))',
+                     re.M)
+    hits = []
+    for p in files:
+        try:
+            if pat.search(p.read_text(encoding='utf-8', errors='ignore')):
+                hits.append(p.relative_to(SRC))
+        except OSError:
+            pass
+    sample = str(hits[0]) if hits else '-'
+    print(f'{name:22} {len(hits):>10}  {sample}')
+PY
+  log "依赖可达性报告已写入: $out"
+}
+probe_dep_usage
 
 OUT="$DIST_DIR/rootfs.tar.xz"
 # --one-file-system 双保险：即使有残留挂载也不会把宿主文件系统打进包；
