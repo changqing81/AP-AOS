@@ -35,12 +35,25 @@
 set -uo pipefail
 
 ALAS_DIR="${ALASAOS_ALAS_ROOT:-/opt/alas}"
-REPO="${ALASAOS_UPDATE_REPO:-git://git.lyoko.io/AzurLaneAutoScript}"
 BRANCH="${ALASAOS_UPDATE_BRANCH:-master}"
 DEPTH="${ALASAOS_UPDATE_DEPTH:-50}"
 TIMEOUT="${ALASAOS_UPDATE_TIMEOUT:-240}"
 STATE_FILE="$ALAS_DIR/.alasaos_alas_commit"
 FAIL_FILE="$ALAS_DIR/.alasaos_update_fail_date"
+
+# ★ 上游源**从 BUILD_MANIFEST 派生**，不再写死 ALAS 的 lyoko 镜像。
+# 写死的后果很严重：AzurPilot 的 rootfs 会被 fetch + `git reset --hard` 成
+# **ALAS 源码**——整个运行环境被悄悄换成另一个项目，而症状是「更新后一堆怪错」，
+# 极难归因（补丁也会随之全部失配）。
+MANIFEST="$ALAS_DIR/BUILD_MANIFEST"
+if [[ -z "${ALASAOS_UPDATE_REPO:-}" && -f "$MANIFEST" ]]; then
+  _repo="$(grep -o '"upstream_repo": *"[^"]*"' "$MANIFEST" | head -1 | sed 's/.*: *"//; s/"$//')"
+  if [[ -n "$_repo" ]]; then
+    ALASAOS_UPDATE_REPO="$_repo"
+    echo "[update] 上游源取自 BUILD_MANIFEST: $_repo"
+  fi
+fi
+REPO="${ALASAOS_UPDATE_REPO:-git://git.lyoko.io/AzurLaneAutoScript}"
 
 # 终态失败才记退避：通道内回落不算失败
 fail() { date +%F > "$FAIL_FILE" 2>/dev/null; echo "FAILED $1"; exit 1; }
@@ -71,7 +84,10 @@ fi
 find .git -name '*.lock' -delete 2>/dev/null
 
 # ---------- 通道 1：CDN pack ----------
-if [[ -z "${ALASAOS_UPDATE_NO_CDN:-}" ]]; then
+# 该通道复刻的是 **ALAS 官方 git_over_cdn 协议**（latest.json + 增量 zip，托管在 ALAS
+# 自己的 CDN 上），**只对 lyoko 那个仓库有效**。换成其他上游（AzurPilot）没有对应
+# CDN，直接跳过，免得白跑一次 404/超时。
+if [[ -z "${ALASAOS_UPDATE_NO_CDN:-}" && "$REPO" == *lyoko* ]]; then
   cdn_out="$(python3 seeds/cdn_update.py "$ALAS_DIR" "$current" 2>&1)"; cdn_rc=$?
   echo "$cdn_out" | sed 's/^/  /'
   cdn_last="$(echo "$cdn_out" | tail -1)"
