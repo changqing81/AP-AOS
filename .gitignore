@@ -31,6 +31,12 @@ spike/**/dist/*.apk
 !rootfs/build/
 !rootfs/patches/module/config/
 
+# v3 阶段二：app 源码包 com/aliothmoon/maafw/config/ 同样被上方 config/ 规则误伤。
+# 漏了这条反忽略 → 该源码包（UserConfigurationStore/ConfigurationResolver）从未入库，
+# app 模块在任何干净 clone 上都编译不过（CI run 36000734721 即此因）。
+# 注意：这与 rootfs 侧那条是两回事，不要合并。
+!app/app/src/main/java/com/aliothmoon/maafw/config/
+
 # 阶段三：rootfs 资产随包内置（300MB+ 不入库，构建前从 rootfs-dist 拷入）；BUILD_MANIFEST 入库
 /app/app/src/main/assets/rootfs/rootfs.tar.xz
 /keystore/
