@@ -4,6 +4,28 @@
 > **历史坑点（m0 阶段，全真机实证）见 `m0-archive/docs/debug.md` 与 `m0-archive/docs/devlog/`。** 高频索引：
 > WebView `vh` 塌缩（注入 innerHeight 修复）｜幻影进程查杀（`max_phantom_processes` / `settings_enable_monitor_phantom_procs`）｜mDNS `_adb-tls-connect` 端口过期但广播残留｜MaaFW PP-OCR 对 2D 单通道静默返空（堆叠 3ch）｜MaaFW 截图 BGR↔ALAS RGB 翻转｜RUN_COMMAND 权限只授清单声明方｜`am force-stop` 杀不掉 shell uid 残留（须显式 kill）｜桥 30s 无流量判死（10s 心跳）。
 
+## [2026-09-24] `.gitignore` 的通用目录名规则会静默屏蔽源码包：app 模块在干净 clone 上编译不过
+
+- **现象**：CI 报 `e: di/CoreModule.kt:8:29 Unresolved reference 'config'.`、
+  `e: settings/SettingsViewModel.kt:5:29 Unresolved reference 'config'.`，
+  而**本地磁盘上也没有** `app/app/src/main/java/com/aliothmoon/maafw/config/` 这个目录。
+- **根本原因**：`.gitignore` 第 8 行有一条通用规则 `config/`（本意忽略配置文件目录），
+  它**把同名的源码包一起屏蔽了**。仓库里只对 rootfs 侧补过反忽略
+  （`!rootfs/patches/module/config/`），**app 侧漏了** → 该源码包
+  （`UserConfigurationStore.kt` / `ConfigurationResolver.kt`）**从未进入 git**。
+  结果：原开发机磁盘上有这两个文件 → 编得过（历史"构建全绿"记录由此而来）；
+  **任何干净 clone（含 CI）→ 没有 → 编译失败**。
+- **判据**：`git log --all --diff-filter=A | grep <路径片段>` **命中 0 = 该文件从未入库**
+  （哪怕它一直存在于某台机器上）。排查"包/类找不到"时**先确认它在不在 git 里**，别只在工作区找。
+- **解决方案**：`.gitignore` 补 `!app/app/src/main/java/com/aliothmoon/maafw/config/`；
+  源码从上游 `Aliothmoon/MaaFwApp` 取回（依赖已核：`UserConfigurationStore` 只需
+  `domain/UserConfiguration`；`ConfigurationResolver` 的 23 个 domain 类本仓全有）。
+- **教训**：`.gitignore` 里写**裸目录名**（`config/`、`build/`、`debug/`、`dist/`）在 Kotlin/Java
+  多模块仓库里是**高危操作** —— 包路径天生就叫这些名字。要么写成锚定路径（`/config/`），
+  要么给每个源码目录补反忽略。
+  **自检手段**：`git check-ignore -v <新文件>` 必须**非 0**；
+  `find app -path "*/src/*" -type d | xargs -I{} git check-ignore -q {}` 扫一遍被忽略的源码目录。
+
 ## [2026-09-24] Kotlin 块注释可嵌套：注释里写路径 `module/**` 让整个文件「未闭合」（第二次踩）
 
 - **现象**：`apk` job 的 `:app:compileDebugKotlin` 报出一大片互相印证不上的错误：
