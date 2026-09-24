@@ -120,16 +120,19 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # 不指定 packages：'tools' 这个包在新版 cmdline-tools 里已被移除，
-      # 写 `packages: tools` 会让 action 在 `sdkmanager tools` 处报
-      # "Warning: Failed to find package 'tools'" 并以 exit 1 结束整个 action
-      # （run 35992292649 实测）。platform-tools / platforms / build-tools
-      # 交给 AGP 按需自动安装（SDK license 已由本 action 接受）。
+      # 必须**显式覆盖** packages：该 action 的默认值就是 'tools platform-tools'，
+      # 而 **tools 包在新版 cmdline-tools（16.0 / 12266719）里已被移除**
+      # → `sdkmanager tools` 报 "Failed to find package 'tools'" 并 exit 1，
+      # 整个 action 随之失败。
+      # 注意：**只删掉 packages 是没用的** —— 不写 = 用 action 默认值，照样带 tools
+      # （run 35992292649 写了 packages、run 35993347679 没写，两次同样死在这里）。
+      # 因此这里显式写成只有一个有效包。
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
+          packages: platform-tools
 
       - name: Install CMake 3.22.1 (and best-effort NDK)
         run: |
