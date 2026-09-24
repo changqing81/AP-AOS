@@ -357,7 +357,51 @@ M4 App 侧收尾 + 真机回归             ← 日志页、文案、长稳
 1. 两套 OCR 的**调用面**都落在 `module/ocr/` 上，但 Azurpilot 自带 `rpc.py`（含 `start_ocr_server(port=22268)`、zerorpc 路径）→ 我方 shim 若覆盖它，会**同时废掉原生路径**。因此不能再用「整文件覆盖 `rpc.py`」的手法。
 2. 正确做法：把兜底通道做成**独立模块 + 一个开关**（如 `module/ocr/apaos_fallback.py` + `config` 键或环境变量 `APAOS_OCR_BACKEND=native|inproc`），由构建/启动期选择，**不改动 Azurpilot 的 `rpc.py`**。
 3. 兜底通道的触发条件：原生 RapidOCR 在 aarch64/proot 上装不上（依赖缺失）或精度不达线（M0-S2 判定）。
-4. 模型资产（~120MB）是否仍随包内置：若走原生通道，本仓自备的 PP-OCR 模型可**仅在兜底通道启用时**才部署，可省体积。
+4. 模型资产是否仍随包内置：实测 `bin/ocr_models/` 全量 **288.8MB**（§13.2），但**默认路径只用到其中一小部分**（见 §11.1）；本仓自备的 PP-OCR 模型可仅在兜底通道启用时才部署。
+
+### 11.1 原生 OCR 的默认模型集与 CPU 路径（S2 桌面预判，2026-09-24）
+
+只读 `module/ocr/al_ocr.py` 所得，**大幅收窄了 S2 的不确定性，也直接改写体积裁剪方案**：
+
+**(1) 默认档位不是 medium，是 standard（=small）**
+
+配置键 `config.ocr_model_version(<逻辑名>)`，默认值 `'auto'` → 解析到 `DEFAULT_ONNX_MODEL_VERSION`：
+
+| 逻辑名 | 默认模型 | 文件 | 体积 |
+|---|---|---|---|
+| `azur_lane` | `alocr_en_v2_6`（旧版 PP-OCRv4 结构） | `azur_lane/alocr-en-us-v2.6.nvc.onnx` | 7.3 MB |
+| `cn` | `alocr_cn_v3`（旧版 PP-OCRv5 结构） | `zh-CN/alocr-zh-cn-v3.dtk.onnx` | 15.8 MB |
+| `ppocr_v6` / `jp` / `tw` / `azur_lane_jp` | `standard`（=small） | `ppocr-v6/PP-OCRv6_small_rec.onnx` | 20.2 MB |
+
+**(2) 检测模型默认只用 tiny**
+
+`det/` 里三个档位（medium 59.2 / small 9.4 / tiny 1.7 MB）中，**默认路径只加载 `PP-OCRv6_tiny_det.onnx`（1.7MB）**。
+
+→ **默认模型集实际只需 ~25–45MB，而非 288.8MB。** 裁剪方案（§13.3）据此收敛：`det/` 只需留 tiny；`ppocr-v6/` 只需留 small（若 `cn` 走 AlOCR 则可能连 PP-OCRv6 都不需要）；`ncnn/` 整目录（97.3MB）**确认可全删**（代码里 ncnn 只是可选后端，非默认）。
+
+**(3) 纯 CPU 路径存在，且不需要任何 GPU 栈**
+
+`config.ocr_device = 'cpu'` 时：`use_dml = False`（代码注释明示「不能交给 RapidOCR 默认 DirectML」）、`use_coreml = ocr_device == 'ane'`（cpu 时为 False）、**全代码无 Vulkan 引用**；`_configure_windows_ml_sessions()` 有 `if os.name != 'nt': return ocr` 守卫 → 非 Windows 直接保持 RapidOCR 默认 CPU session。
+
+**(4) 不需要 zerorpc / OCR server**
+
+`al_ocr.py` **无任何 zerorpc 引用**；所谓"服务"只是进程内的后台线程队列（`AlOcrQueue` 线程 + `queue.Queue`），用于避免阻塞主循环。→ 原 ALAS 的 `StartOcrServer` 那套在原生路径下完全不参与。
+
+**(5) 🔴 新风险：omegaconf 版本陷阱（上游已注释，M1 必须显式钉版）**
+
+上游源码注释原文：
+
+> rapidocr 的 `RapidOCR._load_config` 在 `Global.model_root_dir` 为 None 时会把 `pathlib.Path` 写进 `DictConfig`，而 omegaconf 2.0.x（rapidocr 只声明 `omegaconf!=2.2.1`，没有下限，Python 3.14 下会解析到 2.0.6）拒绝 Path，抛 `UnsupportedValueType` 导致所有 OCR 初始化失败。
+
+上游靠「把根目录显式转成字符串」规避。**我方在 M1 必须显式钉 `omegaconf` 版本**，否则 Python 3.14 上会静默解析到 2.0.6 并让整条 OCR 链失效。
+
+**(6) 🔴 裁剪红线：不能删默认路径加载的模型**
+
+`al_ocr.py` 的 import 失败路径是 `handle_ocr_error(e)` → **无条件 `raise RequestHumanTakeover`**（硬中断，整个调度器停摆）。所以裁剪必须**只删非默认档位/非默认后端**的模型，删错一个就直接宕机。这条必须在 M2/M5 用 S2 实测把关。
+
+**(7) 残余风险**
+
+`onnxruntime` 的 aarch64 可用性（已核实 cp314 aarch64 轮子存在，§12.1）；`rapidocr`/`omegaconf`/`numpy`/`opencv-python`/`Pillow` 的版本兼容（部分由 S1 探针覆盖）。
 
 ---
 
@@ -582,6 +626,52 @@ git push
 gh run watch
 gh run download <RUN> -n probe-s1-log -D .tmp/probe-s1/
 ```
+
+### 14.5 S1 首跑结果（2026-09-24，run #1 `35979598236`）——**实质通过**
+
+**run 结论是 `failure`，但失败原因是我探针自身的 3 个 bug，不是依赖装不上。** 去掉噪声后的真实结论：**S1 通过**。
+
+#### 真实结果
+
+| 观测项 | 值 | 判定 |
+|---|---|---|
+| Ubuntu base | 26.04.1 LTS (Resolute Raccoon) arm64，glibc **2.43** | ✅ |
+| uv | **0.12.18**（aarch64-unknown-linux-gnu） | ✅ 可用 |
+| 依赖安装 | **140 个包全部解析安装成功**（`uv pip install` exit=0） | ✅ |
+| venv 内核心组 import | **21/22 OK** | ✅（唯一 FAIL 见下） |
+| venv 内次要组 import | **12/12 OK**（`numba 0.66.0` / `ncnn 1.0.20260526` / `onnxruntime 1.27.0` / `rapidocr 3.9.0` / `aiortc 1.15.0` / `mcp 1.23.0` 全过） | ✅ |
+| 体积核算（步骤 5，认证后完整） | `bin/` **322.8MB** + `assets/` **79.9MB**（6816 文件）= 402.7MB | 见 §13.2 |
+
+**唯一 FAIL 的 `fastapi` 是我的门禁清单写错了**——上游 `pyproject` 只依赖 `starlette==0.49.1`，**根本不依赖 fastapi**。
+
+#### 🔴 唯一的硬伤：Python 版本差两个补丁
+
+**Ubuntu 26.04.1 自带的 `python3` 是 3.14.4，而上游要求 `>=3.14.6,<3.15`。**
+
+后果：靠发行版 python 无法满足 `requires-python`。**解法（已写进探针）**：不依赖发行版解释器，改用 **uv 自带的 python-build-standalone**：
+
+```bash
+uv python install 3.14     # 装 uv 托管的最新 3.14.x（>=3.14.6）
+uv venv .venv --python "$(uv python find 3.14)"
+```
+
+这条同时解决了「换 base 到 26.04 仍不满足版本要求」的隐患，也让 rootfs 不再受发行版 Python 版本牵制。
+
+#### 探针的 3 个 bug（已修，待重跑确认）
+
+| # | Bug | 后果 | 修法 |
+|---|---|---|---|
+| 1 | 门禁对 `/usr/bin/python3` 也跑了一遍 | 系统解释器没装依赖 → 必然全 FAIL，把结论污染成「失败」 | 只对 venv 跑门禁；`GATE_RC` 直接取 venv 结果 |
+| 2 | `uv sync --no-dev 2>&1 \| tail -25` | **管道退出码是 `tail` 的**，把失败吞成 `exit=0`（首跑就报了假成功） | 输出落盘再 `tail`，退出码取 `uv sync` 本身 |
+| 3 | 门禁核心组列了 `fastapi` | 上游不依赖它 → 假 FAIL | 换成 `starlette`（上游真实依赖） |
+
+#### 依赖面的重要发现（影响 M1）
+
+- **`pydantic>=2.12.5`（v2）**——本仓 ALAS 时代钉的是 `pydantic<2`。**这是依赖面的根本变化**，ALAS 侧任何依赖 v1 API 的补丁都要重估。
+- **`imageio==2.26.0`**——本仓因 T2 崩溃（P 模式 GIF 被解成 RGB 3 通道 → cv2 通道断言崩）钉的是 **2.27.0**。需复核该问题在 Azurpilot 下是否仍存在（若存在，要在 override 里钉回 2.27.0）。
+- `adbutils==0.11.0` + `uiautomator2==2.16.17`——都是**很老的版本**（本仓现状用的是 u2 3.x）。装得上（纯 Python），但要注意 `minitouch.py`/`method/utils.py` 那两个 u2>=3 兼容 shim 是否还需要。
+- `uv==0.11.32` 被上游**列为运行时依赖**（不只是构建工具）。
+- `onnxruntime==1.27.0; sys_platform=='linux'`——已确认装上并 import OK。
 
 ---
 

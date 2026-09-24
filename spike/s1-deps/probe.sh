@@ -206,9 +206,26 @@ hr; say "requirements.txt 内容（已替换 opencv 变体）："
 chroot_run /bin/bash -c 'cat -n /opt/probe/requirements.txt'
 
 # ---------- 8. 通道 A：uv venv + uv pip install（主路径） ----------
+# 关键：Ubuntu 26.04.1 自带的 python3 是 **3.14.4**，而上游要求 >=3.14.6。
+# 不依赖发行版 python —— 用 uv 自带的 python-build-standalone 装一个满足要求的解释器。
 hr; say "步骤 8 · 通道 A：uv venv + uv pip install"
-chroot_run uv venv /opt/probe/venv --python /usr/bin/python3 2>&1 | tail -5
-say "venv python: $(chroot_run /opt/probe/venv/bin/python -c 'import platform;print(platform.python_version())' 2>&1)"
+say "系统 python3: $(chroot_run /usr/bin/python3 -c 'import platform;print(platform.python_version())')"
+if chroot_run uv python install 3.14 >/dev/null 2>&1; then
+  UV_PY="$(chroot_run uv python find 3.14 2>/dev/null | tail -1)"
+  say "uv 托管的 python: ${UV_PY:-<未找到>}"
+else
+  UV_PY=""
+  say "WARN uv python install 3.14 失败，回落系统 python3"
+fi
+if [[ -n "$UV_PY" ]]; then
+  chroot_run uv venv /opt/probe/venv --python "$UV_PY" 2>&1 | tail -5
+else
+  chroot_run uv venv /opt/probe/venv --python /usr/bin/python3 2>&1 | tail -5
+fi
+VENV_PY_VER="$(chroot_run /opt/probe/venv/bin/python -c 'import platform;print(platform.python_version())' 2>&1)"
+say "venv python: $VENV_PY_VER"
+VENV_GATE="$(chroot_run /opt/probe/venv/bin/python -c 'import sys;v=sys.version_info[:3];print("PASS" if v>=(3,14,6) and v<(3,15) else "FAIL")' 2>&1)"
+say "venv requires-python 门禁: $VENV_GATE"
 
 UV_PIP_EXTRA=()
 [[ -f "$ROOTFS_DIR/opt/probe/overrides.txt" ]] && UV_PIP_EXTRA=(--override /opt/probe/overrides.txt)
@@ -222,30 +239,37 @@ say "通道 A 退出码: $RC_UV_PIP"
 
 # ---------- 9. 通道 B：uv sync（保真度测试，非致命） ----------
 # 测试「上游没有 uv.lock 时能否从 pyproject 直接解析」——本仓 adopt uv 的关键未知。
+# 注意：**不能**写成 `uv sync ... | tail -N`——管道的退出码是 tail 的，会把失败吞成 0
+# （首跑即踩此坑，通道 B 报了假 exit=0）。改为落盘再 tail。
 hr; say "步骤 9 · 通道 B：uv sync（无 uv.lock，信息性）"
 mkdir -p "$ROOTFS_DIR/opt/probe/proj"
 cp "$ROOTFS_DIR/opt/probe/pyproject.toml" "$ROOTFS_DIR/opt/probe/proj/pyproject.toml"
+SYNC_LOG="$PROBE_WORK/uv-sync.log"
 set +e
-chroot_run /bin/bash -c 'cd /opt/probe/proj && uv sync --no-dev 2>&1 | tail -25'
+chroot_run /bin/bash -c 'cd /opt/probe/proj && uv sync --no-dev' > "$SYNC_LOG" 2>&1
 RC_UV_SYNC=$?
 set -e
 say "通道 B 退出码: $RC_UV_SYNC（非致命；仅用于判断是否必须自建 lockfile）"
+say "--- uv sync 输出末 25 行 ---"
+tail -25 "$SYNC_LOG"
 
 # ---------- 10. import 门禁 ----------
 # 核心组硬失败；次要组只报告（不因单个次要包失败而否定整条通道）
 hr; say "步骤 10 · import 门禁"
+# 只对装了依赖的 venv 跑门禁。首跑时误对 /usr/bin/python3 也跑了一遍——系统解释器没有依赖，
+# 必然全 FAIL，只会把结论污染成「失败」（实际 venv 内是 21/22 OK）。
 GATE_RC=0
-for PYEXE in /opt/probe/venv/bin/python /usr/bin/python3; do
-  say "--- 用 $PYEXE 跑门禁 ---"
-  set +e
-  chroot_run "$PYEXE" - <<'PY'
+PYEXE=/opt/probe/venv/bin/python
+say "--- 用 $PYEXE 跑门禁 ---"
+set +e
+chroot_run "$PYEXE" - <<'PY'
 import importlib
 import sys
 
 CORE = [
     ('cv2', 'opencv'), ('numpy', 'numpy'), ('scipy', 'scipy'), ('PIL', 'pillow'),
     ('lxml.etree', 'lxml'), ('yaml', 'pyyaml'), ('pywebio', 'pywebio'),
-    ('uvicorn', 'uvicorn'), ('fastapi', 'fastapi'), ('pydantic', 'pydantic'),
+    ('uvicorn', 'uvicorn'), ('starlette', 'starlette'), ('pydantic', 'pydantic'),
     ('imageio', 'imageio'), ('rich', 'rich'), ('requests', 'requests'),
     ('onnxruntime', 'onnxruntime'), ('rapidocr', 'rapidocr'),
     ('adbutils', 'adbutils'), ('uiautomator2', 'uiautomator2'),
@@ -295,11 +319,10 @@ if core_fail:
     sys.exit(1)
 print('  ALL_CORE_IMPORTS_OK')
 PY
-  RC_GATE=$?
-  set -e
-  say "门禁退出码（$PYEXE）: $RC_GATE"
-  [[ $RC_GATE -ne 0 ]] && GATE_RC=1
-done
+RC_GATE=$?
+set -e
+say "门禁退出码（$PYEXE）: $RC_GATE"
+GATE_RC=$RC_GATE
 
 # ---------- 11. 汇总 ----------
 cleanup_mounts

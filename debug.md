@@ -4,6 +4,18 @@
 > **历史坑点（m0 阶段，全真机实证）见 `m0-archive/docs/debug.md` 与 `m0-archive/docs/devlog/`。** 高频索引：
 > WebView `vh` 塌缩（注入 innerHeight 修复）｜幻影进程查杀（`max_phantom_processes` / `settings_enable_monitor_phantom_procs`）｜mDNS `_adb-tls-connect` 端口过期但广播残留｜MaaFW PP-OCR 对 2D 单通道静默返空（堆叠 3ch）｜MaaFW 截图 BGR↔ALAS RGB 翻转｜RUN_COMMAND 权限只授清单声明方｜`am force-stop` 杀不掉 shell uid 残留（须显式 kill）｜桥 30s 无流量判死（10s 心跳）。
 
+## [2026-09-24] `git push` 静默挂死零输出：PortableGit 默认把凭据助手选择器设为 `<no helper>`，且 GCM 必须在沙箱外才能访问 Windows 凭据存储
+
+- **现象**：`git push origin main` 长时间**无任何输出**（连报错都没有），`timeout` 到点被杀；`git-credential-manager diagnose` 同样零输出挂死。但 `git ls-remote`（GET）直连正常、`git credential fill` 返回空。误判方向：先后怀疑「没有推送权限」「github 被墙」「本机代理不通」。
+- **根本原因**：**两个独立问题叠加**——
+  1. PortableGit 的系统级 `etc/gitconfig` 里写死 `credential.helper=helper-selector`，而 `~/.gitconfig` 里 `credential.helperselector.selected = <no helper>`——选择器被显式关掉，等于**没有任何凭据助手接管**。`git config --list` 只显示 `selected=<no helper>`，容易被误读成「没配置」而不是「被关掉了」。
+  2. Git Credential Manager（PortableGit 自带 `git-credential-manager.exe` 2.9.0）在**沙箱内**调用会静默挂死——它要访问 Windows 凭据存储 / 拉起认证 UI，这类 Win32 调用被沙箱挡住后表现为**无限阻塞而非报错**。
+  - 注意：**`ls-remote` 通不能推断 `push` 通**——前者是匿名 GET（`info/refs`），后者是需认证的 `git-receive-pack`（POST）。本例网络完全正常，纯凭据问题。
+- **解决方案**：
+  1. 选回 GCM：`git config --global credential.helperselector.selected manager`（配套 `git config --global credential.https://github.com.provider github`）。
+  2. **推送命令必须在沙箱外执行**（沙箱内必挂）。两处修好后一次通过，且无需交互登录——GCM 从凭据存储直接取到。
+- **排查顺序（下次直接照做）**：`git config --list --show-origin | grep -i credential` 看谁在管凭据 → `cmdkey /list` 看 Windows 凭据库有无条目 → 非交互探针 `printf 'protocol=https\nhost=github.com\n\n' | GIT_TERMINAL_PROMPT=0 git credential fill` → 前三条都正常但 push 仍挂，则**换沙箱外重试**，不要再去怀疑网络或权限。
+
 ## [2026-09-18] git:// 9418 裸 TCP 在运营商网络下不可靠：ping 通≠端口快，大陆正解是 CDN pack（443）
 
 - **现象**：手机热更新连续 5 次 `FAILED fetch`，每次白烧 240s 超时（开机链 4 分钟）；但 ping git.lyoko.io 正常（24~48ms），ls-remote（小包）也能成。
