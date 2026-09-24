@@ -4,6 +4,28 @@
 > **历史坑点（m0 阶段，全真机实证）见 `m0-archive/docs/debug.md` 与 `m0-archive/docs/devlog/`。** 高频索引：
 > WebView `vh` 塌缩（注入 innerHeight 修复）｜幻影进程查杀（`max_phantom_processes` / `settings_enable_monitor_phantom_procs`）｜mDNS `_adb-tls-connect` 端口过期但广播残留｜MaaFW PP-OCR 对 2D 单通道静默返空（堆叠 3ch）｜MaaFW 截图 BGR↔ALAS RGB 翻转｜RUN_COMMAND 权限只授清单声明方｜`am force-stop` 杀不掉 shell uid 残留（须显式 kill）｜桥 30s 无流量判死（10s 心跳）。
 
+## [2026-09-24] Kotlin 块注释可嵌套：注释里写路径 `module/**` 让整个文件「未闭合」（第二次踩）
+
+- **现象**：`apk` job 的 `:app:compileDebugKotlin` 报出一大片互相印证不上的错误：
+  ```
+  e: AlasOverlay.kt:141:1 Syntax error: Unclosed comment.
+  e: ProotHost.kt:106:23 Unresolved reference 'AlasOverlay'.
+  e: di/CoreModule.kt:8:29 Unresolved reference 'config'.
+  e: settings/SettingsViewModel.kt:5:29 Unresolved reference 'config'.
+  ```
+  看起来像「文件丢了」，其实全是**一条注释**引起的连锁。
+- **根本原因**：**Kotlin 的块注释可嵌套**（`/* a /* b */ c */` 合法）。KDoc 里写路径通配
+  `patches/module/**`，其中 `/*` 会**开启一层新注释**；文件里 `*/` 数量不够 → 注释永远合不上，
+  **从该行起整个文件都被当成注释** → 本文件的类消失，连带 KSP 生成物
+  （`com.aliothmoon.maafw.config.*`）也一起 Unresolved。
+  证据：`AlasOverlay.kt` 共 **140 行**，报错在 **141:1**（文件末尾）。
+- **解决方案**：注释里不要出现 `/**`，改写成 `` `path/` 整层 `` 之类措辞。
+- **静态防线（已进 CI）**：`apk` job 的 Build 之前先跑
+  `grep -rnE '^\s*\*.*/\*' --include='*.kt' app/`，命中即 fail-fast，省掉一次 5 分钟编译。
+- **复发记录**：2026-09-21 已在 `LauncherLogScanner` / `LogCleaner` 踩过同款（当时是 KDoc 里写 `log/*.txt`）。
+- **教训**：Kotlin 报出「一大片 Unresolved reference」时，**先找有没有一条 `Unclosed comment`** ——
+  一条注释错误能伪装成十几个「找不到符号」。
+
 ## [2026-09-24] gradlew 在 Windows 上提交会丢可执行位：CI 检出后 `./gradlew` 直接 exit 126
 
 - **现象**：`apk` job 走到第 9 步 `Build debug APK`，47 秒即挂，日志只有两行：

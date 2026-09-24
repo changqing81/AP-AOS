@@ -181,6 +181,20 @@ jobs:
             echo "  $code  $base"
           done
 
+      # Kotlin 的块注释**可以嵌套**：注释里出现 `/*` 序列（典型是写路径 `module/**`）
+      # 会开启新一层注释而永不闭合 → `Syntax error: Unclosed comment`，
+      # 并连锁出一堆 `Unresolved reference`（run 35999029257 即如此：AlasOverlay.kt
+      # 未闭合 → KSP 代码生成中断 → `com.aliothmoon.maafw.config` 整包 Unresolved）。
+      # 本坑 2026-09-21 已在 LauncherLogScanner/LogCleaner 踩过一次，故在此加静态防线。
+      - name: Guard against nested block comments in Kotlin
+        run: |
+          cd app
+          if grep -rnE '^\s*\*.*/\*' --include='*.kt' .; then
+            echo "::error::Kotlin 注释里出现 '/*' 序列（会开启嵌套块注释 → Unclosed comment）"
+            exit 1
+          fi
+          echo "OK: Kotlin 注释无嵌套块注释风险"
+
       - name: Build debug APK
         run: |
           df -h /

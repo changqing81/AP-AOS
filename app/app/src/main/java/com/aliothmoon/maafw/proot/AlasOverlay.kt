@@ -16,7 +16,7 @@ import java.io.File
  * （如 maaal→alasaos）留下的旧名文件只删不盖，防旧码被误加载。
  *
  * ── 按上游 flavor 分流（2026-09-24 新增，**关键**）──────────────────────────
- * 本仓 `assets/alas/patches/module/**` 是 **ALAS 时代的「整文件副本」补丁**
+ * 本仓 `assets/alas/patches/module/` 下的资产是 **ALAS 时代的「整文件副本」补丁**
  * （connection.py 1267 行 / screenshot.py / control.py / app_control.py / base.py …），
  * 它们**对着 ALAS 上游写**。整层盖到 AzurPilot 上会回退上游实现、引用不存在的 API
  * ——等于把上游改坏。构建侧（build-rootfs.sh）已按 flavor 分流，App 侧同样必须分流，
@@ -114,11 +114,11 @@ class AlasOverlay(private val context: Context) {
          * flavor=azurpilot*：**只铺我方纯新增的资产**，一条都不碰上游文件。
          *
          * 刻意排除：
-         * - `alas/patches/module/**`（ALAS 整文件补丁 → 会改坏上游）
-         * - `alas/patches/assets/**` + `assets_fix.py`（ALAS 素材与其校准表）
-         * - `alas/overlay/module/ocr/**`（我方 in-proc OCR shim → 会让上游原生
+         * - `alas/patches/module/` 整层（ALAS 整文件补丁 → 会改坏上游）
+         * - `alas/patches/assets/` 整层 + `assets_fix.py`（ALAS 素材与其校准表）
+         * - `alas/overlay/module/ocr/` 整层（我方 in-proc OCR shim → 会让上游原生
          *   RapidOCR 失效；按冻结决策「OCR 走原生」）
-         * - `alas/overlay/models/ocr/azur_lane/**`（ALAS 专用字体 OCR 模型）
+         * - `alas/overlay/models/ocr/azur_lane/` 整层（ALAS 专用字体 OCR 模型）
          *
          * 桥接接线（MRO 混入 + 方法分派 + Connection 短路）由构建期补丁注入，
          * 不在运行时覆盖 —— 见 rootfs/patches/azurpilot-android.patch。
