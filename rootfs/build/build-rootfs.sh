@@ -520,7 +520,7 @@ PY
 #   3) SOFT：构造 AzurLaneAutoScript('alas') —— 校验配置绑定 + 设备链（含桥接短路）
 # 注：regen_args 会改写树内 args.json / zh-CN.json，**不回滚** —— 运行时每次启动
 #     也会再生一遍；烘一份进去正好当兜底（regen 失败时选项仍在）。
-hr; say "步骤 9.7 · 运行时就绪冒烟"
+log "步骤 9.7 · 运行时就绪冒烟"
 chroot_run /bin/bash -c "cd $GUEST_ALAS_ROOT && ALASAOS_ALAS_ROOT=$GUEST_ALAS_ROOT $GUEST_PYTHON seeds/seed_config.py" \
   || { echo "::error::seed_config.py 失败（我方 seeder 与上游 template.json 已不匹配）"; exit 1; }
 if [[ -f "$ROOTFS_DIR$GUEST_ALAS_ROOT/config/alas.json" ]]; then
