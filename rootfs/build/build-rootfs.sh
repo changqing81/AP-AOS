@@ -318,11 +318,29 @@ if [[ "$UPSTREAM_FLAVOR" == "alas" ]]; then
   # assets_fix.py 改的是上游树内文件（argv[1]=上游根）：按 Button 名就地重写，非整文件覆盖
   python3 "$ASSETS/patches/assets_fix.py" "$ROOTFS_DIR/opt/alas"
 else
+  # M2 桥接集成：**最小 diff 补丁**，不是整文件覆盖。
+  # 补丁只在上游源码里插入必要接线（MRO 混入 + 方法分派 + Connection 短路），
+  # 上游其余部分原样保留。git apply 失败即构建失败 —— 上游漂移会**响亮地**报出来，
+  # 而不是像整文件覆盖那样静默回退上游实现（见 §1.3 / §4.1）。
+  # 补丁由 .tmp/make-azurpilot-patch.py 生成；**必须是 LF 行尾**：上游 .gitattributes
+  # 声明 *.py eol=lf，而 Windows 上 Path.write_text() 默认产出 CRLF，会必然失败（已实测）。
+  PATCH="$ASSETS/patches/azurpilot-android.patch"
+  if [[ ! -f "$PATCH" ]]; then
+    echo "::error::缺少桥接补丁: $PATCH（用 .tmp/make-azurpilot-patch.py 生成）"
+    exit 1
+  fi
+  if grep -q $'\r' "$PATCH"; then
+    echo "::error::桥接补丁含 CRLF 行尾，Linux 构建机上必然应用失败: $PATCH"
+    exit 1
+  fi
+  # 宿主侧 git apply：补丁在仓内、不在 chroot 里；树属 root，需 safe.directory
+  log "应用桥接补丁（最小 diff）: $(basename "$PATCH")"
+  git -c safe.directory='*' -C "$ROOTFS_DIR$GUEST_ALAS_ROOT" apply --verbose "$PATCH" \
+    || { echo "::error::桥接补丁应用失败——上游源码已漂移，请用 .tmp/make-azurpilot-patch.py 重新生成"; exit 1; }
+  # 新增文件：桥客户端本身（补丁只管已跟踪文件的插入）
   install -D -m 0644 "$ASSETS/patches/module/device/method/alasaos.py" \
     "$ROOTFS_DIR/opt/alas/module/device/method/alasaos.py"
-  log "azurpilot：只装 alasaos.py（纯新增，不覆盖上游）"
-  log "azurpilot：ALAS 整文件补丁【未装】——它们会回退/改坏 AzurPilot 上游实现"
-  log "TODO(M2)：桥接集成（MRO 混入 + 方法分派 + Connection 短路）需按 AzurPilot 源码重新派生"
+  log "azurpilot：桥接补丁已应用 + alasaos.py 已装（纯新增）"
   log "azurpilot：assets_fix.py 未重放（其 FIXES 表针对 ALAS 资产，上游素材版本不同）"
 fi
 
