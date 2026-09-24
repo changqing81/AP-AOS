@@ -509,6 +509,62 @@ if fail:
 print('DEEP_IMPORTS_OK')
 PY
 
+# ---------- 9.7 运行时就绪冒烟 ----------
+# 前三层门禁（第三方 import / 上游模块链 import）都只证明「导得进」，
+# 不证明「跑得起来」。这里做三件在上游真实代码上跑的事：
+#   1) 播种实例配置 seed_config.py → config/alas.json
+#      （校验我方 seeder 对上游 template.json 的键是否仍成立）
+#   2) 再生 args regen_args.py → 跑上游 config_updater 完整生成链，再补回 'alasaos' 桥选项
+#      ★ 关键：WebUI 的 ScreenshotMethod/ControlMethod 下拉里必须出现 alasaos，
+#        否则用户在控制台根本选不到桥，整个方案不成立
+#   3) SOFT：构造 AzurLaneAutoScript('alas') —— 校验配置绑定 + 设备链（含桥接短路）
+# 注：regen_args 会改写树内 args.json / zh-CN.json，**不回滚** —— 运行时每次启动
+#     也会再生一遍；烘一份进去正好当兜底（regen 失败时选项仍在）。
+hr; say "步骤 9.7 · 运行时就绪冒烟"
+chroot_run /bin/bash -c "cd $GUEST_ALAS_ROOT && ALASAOS_ALAS_ROOT=$GUEST_ALAS_ROOT $GUEST_PYTHON seeds/seed_config.py" \
+  || { echo "::error::seed_config.py 失败（我方 seeder 与上游 template.json 已不匹配）"; exit 1; }
+if [[ -f "$ROOTFS_DIR$GUEST_ALAS_ROOT/config/alas.json" ]]; then
+  log "播种成功: config/alas.json"
+else
+  echo "::error::seed_config.py 未产出 config/alas.json"
+  exit 1
+fi
+
+chroot_run /bin/bash -c "cd $GUEST_ALAS_ROOT && $GUEST_PYTHON seeds/regen_args.py" \
+  || { echo "::error::regen_args.py 失败（上游 config_updater 生成链或 args.json 结构已变）"; exit 1; }
+# 校验 alasaos 桥选项确实进了 args.json —— 这是「控制台能选到桥」的硬条件
+chroot_run "$GUEST_PYTHON" - <<'PY'
+import json
+p = '/opt/alas/module/config/argument/args.json'
+d = json.load(open(p, encoding='utf-8'))
+bad = []
+for task, group, arg in (('Alas', 'Emulator', 'ScreenshotMethod'),
+                         ('Alas', 'Emulator', 'ControlMethod')):
+    opts = d.get(task, {}).get(group, {}).get(arg, {}).get('option')
+    ok = isinstance(opts, list) and 'alasaos' in opts
+    print(f'  {"OK  " if ok else "FAIL"} {task}.{group}.{arg} option 含 alasaos = {ok}')
+    if not ok:
+        bad.append(f'{task}.{group}.{arg}')
+if bad:
+    print('::error::args.json 缺少 alasaos 选项:', bad)
+    raise SystemExit(1)
+print('BRIDGE_OPTION_OK')
+PY
+
+# SOFT：构造调度器对象（不跑 loop —— loop 会去连桥，CI 里没有桥）
+# 用 heredoc 走 stdin，避免嵌套引号转义（`bash -c "... -c \"...\""` 太脆）
+if chroot_run /bin/bash -c "cd $GUEST_ALAS_ROOT && $GUEST_PYTHON -" <<'PY'
+from alas import AzurLaneAutoScript
+a = AzurLaneAutoScript('alas')
+print('  OK   构造 AzurLaneAutoScript 成功, config_name =', a.config_name)
+print('RUNTIME_CONSTRUCT_OK')
+PY
+then
+  log "运行时就绪冒烟：全部通过"
+else
+  log "WARN: 构造 AzurLaneAutoScript 失败（SOFT，不阻断烘焙；但运行期大概率也会失败）"
+fi
+
 # 优先用 GITHUB_SHA（checkout 的那个 commit）；本地兜底走 git——脚本已 sudo 提权为 root，
 # 直接 git 会撞 "dubious ownership"（仓属 runner 用户），故带 -c safe.directory
 REPO_COMMIT="${GITHUB_SHA:-$(git -c safe.directory='*' -C "$REPO_ROOT" rev-parse HEAD)}"
