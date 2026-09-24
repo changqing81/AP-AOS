@@ -368,8 +368,20 @@ fi
 VENV_PURELIB="$(chroot_run "$GUEST_PYTHON" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
 install -D -m 0644 "$ASSETS/shims/jellyfish.py" "$ROOTFS_DIR$VENV_PURELIB/jellyfish.py"
 
-# deploy.yaml：更新器键全锁（详见 seeds/deploy.yaml 文件头注释）
-install -D -m 0644 "$ASSETS/seeds/deploy.yaml" "$ROOTFS_DIR/opt/alas/config/deploy.yaml"
+# deploy.yaml：**按 flavor 选**（两边的键集不同，详见各文件头注释）
+#   - alas        ：AutoUpdate:false 等七锁
+#   - azurpilot*  ：InstallDependencies:false + Update 三关（替代已消失的 AutoUpdate）
+#                   + WebuiPort 钉回 22267（上游模板默认 25548）
+#   注意 azurpilot 那份是**覆盖文件**：上游 DeployConfig.read() 先读模板再用它覆盖，
+#   缺失键自动回落模板默认 —— 所以只写覆盖项，不照抄整份模板。
+if [[ "$UPSTREAM_FLAVOR" == "alas" ]]; then
+  DEPLOY_SEED="$ASSETS/seeds/deploy.yaml"
+else
+  DEPLOY_SEED="$ASSETS/seeds/deploy-azurpilot.yaml"
+fi
+require_file "$DEPLOY_SEED"
+install -D -m 0644 "$DEPLOY_SEED" "$ROOTFS_DIR/opt/alas/config/deploy.yaml"
+log "deploy.yaml 来源: $(basename "$DEPLOY_SEED")"
 
 # 实例配置生成器 / 热更新脚本 / args 再生器 / 环境自检修复
 install -D -m 0644 "$ASSETS/seeds/seed_config.py" "$ROOTFS_DIR/opt/alas/seeds/seed_config.py"

@@ -1,0 +1,78 @@
+# AlasAos · AzurPilot 专用部署配置（flavor=azurpilot / azurpilot-upstream）
+#
+# ⚠️ 这是**覆盖文件**，不是完整配置：上游 deploy/config.py 的 DeployConfig.read()
+# 会先 poor_yaml_read(模板) 再 update(本文件)，**缺失键自动回落到模板默认**。
+# 所以这里只写我们要改的项，不要照抄整份模板（抄了反而会在上游改默认值时失同步）。
+#
+# 模板基准：config/deploy.template-linux-cn.yaml（上游 master）
+#
+# 与 ALAS 时代 seeds/deploy.yaml 的**关键差异**（换上游时最容易踩的）：
+#   1) 上游**没有 AutoUpdate 键**了 —— 钉版保护不能靠它。新的更新闸门是
+#      Update.{EnableReload, CheckUpdateInterval, AutoRestartTime} + Git.CloudUpdateControl。
+#   2) Python.InstallDependencies 模板默认 **true** → 必须显式关掉，否则启动时
+#      会跑 uv sync 联网装依赖（我们依赖在构建期已烘死）。
+#   3) Ocr 段模板默认 OcrClientAddress 是 127.0.0.1:22268（ALAS 时代我方是 :22300）。
+#   4) Webui 模板默认端口 **25548**（不是 22267）→ 必须钉回 22267，App 侧 WebView
+#      与探针都按 22267 写的。
+#   5) Git.Repository 的 'auto' 会按地区选源（CN→gitcode，其他→GitHub）；
+#      **写具体 URL 则永不被改写**（模板注释明示）。这里写具体 URL。
+Deploy:
+  Git:
+    # 具体 URL = 锁定，config_redirect() 不会改写它
+    Repository: https://github.com/changqing81/Azurpilot-Auto
+    Branch: master
+    # 模板默认是 ./.venv/bin/git（venv 里没有 git）；用 apt 装的系统 git
+    GitExecutable: /usr/bin/git
+    GitProxy: null
+    SSLVerify: true
+    # 云端更新开关：指向一个纯文本 true/false 的地址。
+    # null = 不启用远程开关、**始终允许更新** —— 但下面的 Update 段已把所有触发点关掉，
+    # 且打包时 rm -rf /opt/alas/.git，git 更新物理上不可能发生，故留 null 无实际风险。
+    CloudUpdateControl: null
+
+  Python:
+    # 相对**仓库根**解析：/opt/alas/.venv 是软链 → /opt/alas-venv（源码树之外），
+    # 正是「源码热更新不碰已验依赖环境」的关键。此路径必须与
+    # build-rootfs.sh 的 GUEST_PYTHON 及 App 侧 ProotHost.GUEST_PYTHON 同源。
+    PythonExecutable: ./.venv/bin/python
+    PypiMirror: https://mirrors.aliyun.com/pypi/simple
+    # ★ 锁定：依赖在构建期已装好（uv sync + pyproject 的 override），
+    #   禁止启动时再装。模板默认 true，必须显式关。
+    InstallDependencies: false
+
+  Adb:
+    # 桥接方案不走 adb：不替换、不暴连、不装 uiautomator2 服务
+    ReplaceAdb: false
+    AutoConnect: false
+    InstallUiautomator2: false
+
+  Ocr:
+    # 走上游原生 in-proc OCR（RapidOCR / PP-OCRv6，纯 CPU 路径，已由 M0-S1 实测可用）
+    UseOcrServer: false
+    StartOcrServer: false
+
+  Update:
+    # ★ 钉版保护（替代已消失的 AutoUpdate）：三个触发点全关
+    EnableReload: false
+    CheckUpdateInterval: 0
+    AutoRestartTime: null
+    HideAnnouncement: true
+
+  Misc:
+    DiscordRichPresence: false
+
+  RemoteAccess:
+    # 远程访问默认关（开它会拉起 aiortc/SSH 反向隧道，手机挂机场景不需要）
+    EnableRemoteAccess: false
+
+  Webui:
+    # 只监听回环：App 的 WebView 走 127.0.0.1，绑 0.0.0.0 会把控制台暴露到局域网
+    WebuiHost: 127.0.0.1
+    # ★ 钉回 22267（模板默认 25548）：App 侧 WebView URL 与就绪探针都按 22267 写
+    WebuiPort: 22267
+    Language: zh-CN
+    Theme: default
+    DpiScaling: true
+    Password: null
+    CDN: false
+    Run: null
