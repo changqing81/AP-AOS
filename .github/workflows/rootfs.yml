@@ -101,15 +101,29 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # 不指定 packages：'tools' 这个包在新版 cmdline-tools 里已被移除，
+      # 写 `packages: tools` 会让 action 在 `sdkmanager tools` 处报
+      # "Warning: Failed to find package 'tools'" 并以 exit 1 结束整个 action
+      # （run 35992292649 实测）。platform-tools / platforms / build-tools
+      # 交给 AGP 按需自动安装（SDK license 已由本 action 接受）。
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
 
-      - name: Install CMake 3.22.1 + NDK 28.2
+      - name: Install CMake 3.22.1 (and best-effort NDK)
         run: |
           set -x
-          sdkmanager --install "cmake;3.22.1" "ndk;28.2.13676358"
-          # 装不上就打印可用清单，方便定位版本号漂移
-          sdkmanager --list_installed | grep -Ei 'cmake|ndk' || true
+          # CMake 版本是 app/app/build.gradle.kts 里写死的（version = "3.22.1"），必须装对
+          sdkmanager --install "cmake;3.22.1" || { echo "::error::CMake 3.22.1 安装失败"; exit 1; }
+          # NDK：代码里**没有**声明 ndkVersion（全仓 grep 无），AGP 会自行解析默认版本
+          # 并在需要时自动下载。此处预装只为省下载时间，版本猜错不影响正确性
+          # （AGP 会下它自己需要的那个），故容错不致命。
+          sdkmanager --install "ndk;28.2.13676358" \
+            || echo "::warning::NDK 预装失败，交给 AGP 自行下载（不影响正确性）"
+          echo "--- 已安装组件（定位版本漂移用）---"
+          sdkmanager --list_installed | grep -Ei 'cmake|ndk|platform-tools|build-tools|platforms' || true
 
       - name: Download rootfs artifact
         uses: actions/download-artifact@v4
