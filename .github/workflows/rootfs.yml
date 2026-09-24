@@ -30,7 +30,9 @@ jobs:
 
       # Spike F 门禁（rootfs/build/spike-f-ocr-gate.py，并行任务提供）的 CLI 为
       # --model-dir/--rpc-path/...，不支持 --chroot——故用 chroot 等价写法：
-      # 门禁已随构建装入 /opt/alas/，chroot 进 work/rootfs 用镜像内 python3 跑。
+      # 门禁已随构建装入 /opt/alas/，chroot 进 work/rootfs 跑。
+      # 注意：**必须用 venv 的解释器**——M1 起依赖装在 /opt/alas/.venv，
+      # 系统 python3（3.14.4）没有 numpy/cv2/onnxruntime，用它跑必然 ImportError。
       # TODO: 若门禁脚本日后支持 --chroot，可简化为宿主机直调
       #   python3 rootfs/build/spike-f-ocr-gate.py --chroot work/rootfs
       # 注：rootfs 内无中文字体（--font 缺省），合成图用例按门禁语义记 SKIP，不影响 PASS 判定
@@ -40,7 +42,7 @@ jobs:
           # （onnxruntime 的 CPU 拓扑探测读 /sys，缺 /proc /sys /dev 时行为不确定）
           for d in dev proc sys; do sudo mount --bind /$d work/rootfs/$d; done
           trap 'for d in sys proc dev; do sudo umount -lf work/rootfs/$d || true; done' EXIT
-          sudo chroot work/rootfs /usr/bin/python3 /opt/alas/spike-f-ocr-gate.py \
+          sudo chroot work/rootfs /opt/alas/.venv/bin/python /opt/alas/spike-f-ocr-gate.py \
             --model-dir /opt/alas/models/ocr \
             --rpc-path /opt/alas/module/ocr/rpc.py
 

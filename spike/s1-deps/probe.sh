@@ -237,6 +237,22 @@ RC_UV_PIP=$?
 set -e
 say "通道 A 退出码: $RC_UV_PIP"
 
+# opencv 变体去重（run #35981880600 实测踩到的坑）：
+# rapidocr 声明依赖 `opencv-python`（非 headless，链接 libGL/libxcb），会被作为**传递依赖**
+# 装进来，与我们要的 opencv-python-headless 争同一个 `cv2/` 路径 → cv2 变成需要
+# libxcb.so.1 的版本，在无 X11 的 rootfs 里 `import cv2` 直接炸。
+# 只替换直接依赖不够，必须装完后把非 headless 那份卸掉、再把 headless 重新铺回去。
+OPENCV_SPEC="$(grep -iE '^opencv-python-headless' "$ROOTFS_DIR/opt/probe/requirements.txt" | head -1)"
+if [[ -n "$OPENCV_SPEC" ]]; then
+  say "opencv 去重：卸掉非 headless 变体，重铺 $OPENCV_SPEC"
+  chroot_run uv pip uninstall --python /opt/probe/venv/bin/python opencv-python 2>&1 | tail -3
+  chroot_run uv pip install --python /opt/probe/venv/bin/python -i "$PROBE_PYPI_MIRROR" \
+    --reinstall "$OPENCV_SPEC" 2>&1 | tail -3
+  say "去重后 cv2 位置: $(chroot_run /opt/probe/venv/bin/python -c 'import cv2,os;print(os.path.dirname(cv2.__file__))' 2>&1 | tail -1)"
+else
+  say "requirements 里没有 opencv-python-headless，跳过去重"
+fi
+
 # ---------- 9. 通道 B：uv sync（保真度测试，非致命） ----------
 # 测试「上游没有 uv.lock 时能否从 pyproject 直接解析」——本仓 adopt uv 的关键未知。
 # 注意：**不能**写成 `uv sync ... | tail -N`——管道的退出码是 tail 的，会把失败吞成 0

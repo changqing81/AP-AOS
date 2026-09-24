@@ -12,8 +12,15 @@
   2. Git Credential Manager（PortableGit 自带 `git-credential-manager.exe` 2.9.0）在**沙箱内**调用会静默挂死——它要访问 Windows 凭据存储 / 拉起认证 UI，这类 Win32 调用被沙箱挡住后表现为**无限阻塞而非报错**。
   - 注意：**`ls-remote` 通不能推断 `push` 通**——前者是匿名 GET（`info/refs`），后者是需认证的 `git-receive-pack`（POST）。本例网络完全正常，纯凭据问题。
 - **解决方案**：
-  1. 选回 GCM：`git config --global credential.helperselector.selected manager`（配套 `git config --global credential.https://github.com.provider github`）。
+  1. 选回 GCM：`git config --global credential.helperselector.selected manager`（配套 `git config --global credential.https://github.com.provider github`）。**若弹「Select a credential helper」对话框，选 `manager`**（`wincred` 只能读已存条目、自己不会做 GitHub 认证）。
   2. **推送命令必须在沙箱外执行**（沙箱内必挂）。两处修好后一次通过，且无需交互登录——GCM 从凭据存储直接取到。
+  3. **若 push 仍卡在 `Pushing to ...` 后无输出**（首推成功后复现过，8 分钟超时、无锁文件、`git credential fill` 与 token 均正常）→ 是 **GCM 的 push 认证路径挂死**，绕过它即可：改用显式认证头推送（token 从 `git credential fill` 取，不回显）：
+     ```bash
+     TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')
+     B64=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+     git -c http.extraHeader="Authorization: Basic $B64" push --verbose origin main
+     ```
+     实测立刻通过（`POST git-receive-pack (7647 bytes)` → ref 更新）。**判据：verbose 只打出 `Pushing to ...` 就没了 = GCM 认证挂死，不是网络。**
 - **排查顺序（下次直接照做）**：`git config --list --show-origin | grep -i credential` 看谁在管凭据 → `cmdkey /list` 看 Windows 凭据库有无条目 → 非交互探针 `printf 'protocol=https\nhost=github.com\n\n' | GIT_TERMINAL_PROMPT=0 git credential fill` → 前三条都正常但 push 仍挂，则**换沙箱外重试**，不要再去怀疑网络或权限。
 
 ## [2026-09-18] git:// 9418 裸 TCP 在运营商网络下不可靠：ping 通≠端口快，大陆正解是 CDN pack（443）

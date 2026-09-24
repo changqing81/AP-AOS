@@ -122,7 +122,7 @@ class ProotHost(
         setState(ProotPhase.PREPARING, "播种实例配置")
         // 幂等（config/alas.json 已存在即跳过）；失败不阻塞——WebUI 也能救
         runGuest(
-            listOf("/usr/bin/python3", "seeds/seed_config.py"),
+            listOf(GUEST_PYTHON, "seeds/seed_config.py"),
             SHORT_EXEC_MS,
             mapOf("ALASAOS_ALAS_ROOT" to GUEST_ALAS_ROOT),
         )?.let { r ->
@@ -149,7 +149,7 @@ class ProotHost(
         // 每次启动现场再生 args（活动列表随 campaign/Readme.md 走）并补回 alasaos 桥选项。
         // 失败降级为警告——args.json 仍是上游 git 版，可启动，但 alasaos 选项可能缺失。
         setState(ProotPhase.PREPARING, "再生 args 配置")
-        runGuest(listOf("/usr/bin/python3", "seeds/regen_args.py"), REGEN_ARGS_TIMEOUT_MS)?.let { r ->
+        runGuest(listOf(GUEST_PYTHON, "seeds/regen_args.py"), REGEN_ARGS_TIMEOUT_MS)?.let { r ->
             if (r.exit != 0) Timber.w("regen_args exit=%s out=%s", r.exit, r.output.takeLast(500))
         }
 
@@ -199,7 +199,7 @@ class ProotHost(
             "-w", GUEST_ALAS_ROOT,
             "-r", rootfsDir.absolutePath,
             "-b", "/dev:/dev", "-b", "/proc:/proc", "-b", "/sys:/sys",
-            "/usr/bin/python3", "wrapper.py",
+            GUEST_PYTHON, "wrapper.py",
         )
         Timber.i("proot session spawn: %s", cmd.joinToString(" "))
         val proc = ProcessBuilder(cmd)
@@ -362,7 +362,7 @@ class ProotHost(
 
     /** assets_fix：幂等 + 漂移自检（Button 找不到会非零退出），失败只记警告 */
     private suspend fun runAssetsFix() {
-        val r = runGuest(listOf("/usr/bin/python3", "seeds/assets_fix.py", GUEST_ALAS_ROOT), SHORT_EXEC_MS)
+        val r = runGuest(listOf(GUEST_PYTHON, "seeds/assets_fix.py", GUEST_ALAS_ROOT), SHORT_EXEC_MS)
             ?: return
         if (r.exit == 0) {
             Timber.d("assets_fix OK")
@@ -493,6 +493,15 @@ class ProotHost(
         const val WEBUI_PORT = 22267
 
         private const val GUEST_ALAS_ROOT = "/opt/alas"
+        /**
+         * guest 侧 Python 解释器。**M1 起不再用系统 python3**：
+         * 发行版 python3 是 3.14.4，低于上游 requires-python（>=3.14.6），且依赖装在
+         * uv 托管的 venv 里 —— 系统解释器没有 numpy/cv2/onnxruntime，用它跑必 ImportError。
+         *
+         * 必须与 rootfs/build/build-rootfs.sh 的 GUEST_PYTHON 以及
+         * BUILD_MANIFEST.guest_python 三者同源，改一处要三处同改。
+         */
+        private const val GUEST_PYTHON = "$GUEST_ALAS_ROOT/.venv/bin/python"
         private const val SERVICES_UP_MS = 90_000L
         private const val SHORT_EXEC_MS = 60_000L
         private const val ENV_FIX_TIMEOUT_MS = 300_000L

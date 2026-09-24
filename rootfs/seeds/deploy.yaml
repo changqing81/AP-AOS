@@ -12,14 +12,23 @@ Deploy:
     GitProxy: null
     SSLVerify: true
     # 锁定①：禁止启动时 git pull，保住钉版 commit
+    # ⚠️ M3 待办：**该键在 azurpilot 上游已不存在**（被 CloudUpdateControl / GitOverCdn
+    # 取代），此处的取值对 azurpilot 是空操作 → 「钉版保护」在 azurpilot 下当前**无闸门**，
+    # 必须按上游新键重建。另：上面 Repository 的值对 azurpilot 也不适用，且
+    # config_redirect() 会静默改写旧 gitee/lyoko 类 URL。详见
+    # docs/upstream-swap-azurpilot.md §9 与 §12。
     AutoUpdate: false
 
   Python:
-    # rootfs 内 /usr/local/bin/python → python3 软链（build-rootfs.sh 建立）
-    PythonExecutable: python
+    # M1 起依赖装在 **uv 托管的 venv** 里（发行版 python3 是 3.14.4，低于上游
+    # requires-python >=3.14.6）。此路径必须与 build-rootfs.sh 的 GUEST_PYTHON
+    # 及 App 侧 ProotHost.GUEST_PYTHON 同源，改一处要三处同改。
+    PythonExecutable: /opt/alas/.venv/bin/python
     PypiMirror: https://mirrors.aliyun.com/pypi/simple
     # 锁定②：依赖在构建期已装好，禁止启动时 pip install
     InstallDependencies: false
+    # 注：azurpilot 已废弃 deploy/headless/requirements.txt（改用 pyproject + uv），
+    # 该键在 azurpilot 下不会被读取（InstallDependencies:false 已锁）
     RequirementsFile: ./deploy/headless/requirements.txt
 
   Adb:
