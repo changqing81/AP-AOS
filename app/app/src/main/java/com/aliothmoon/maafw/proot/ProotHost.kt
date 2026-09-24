@@ -138,6 +138,7 @@ class ProotHost(
                 // reset --hard 打回了上游跟踪文件：重放补丁；assets_fix 失败=漂移，记警告不阻塞
                 setState(ProotPhase.PREPARING, "重放本地补丁")
                 AlasOverlay(app).apply(alasDir)
+                replayBridgePatch()
                 runAssetsFix()
             }
         } else {
@@ -358,6 +359,37 @@ class ProotHost(
         if (!finished) proc.destroyForcibly()
         reader.join(2_000)
         ExecResult(if (finished) proc.exitValue() else null, out.toString(), !finished)
+    }
+
+    /**
+     * 热更新后重放**构建期注入**的桥接补丁。
+     *
+     * `alasaos_update.sh` 收尾是 `git reset --hard` —— 而补丁改的正是上游跟踪文件，
+     * 会被一并冲掉。不重放的话，一次热更新之后桥接接线就消失：AzurPilot 退回默认
+     * ADB 设备通道，手机上根本连不上游戏（且症状是「连不上设备」，很难联想到补丁）。
+     *
+     * 补丁由 AlasOverlay 从 assets 铺到 /opt/alas/seeds/（双源同步自 rootfs/patches/）。
+     * 先试 `--3way`（轻微漂移可三方合并），失败再退回普通 apply。
+     * 失败只记警告不阻塞启动，但会在 updateResult 上留痕——因为这意味着桥不可用。
+     */
+    private suspend fun replayBridgePatch() {
+        if (!File(alasDir, "seeds/azurpilot-android.patch").isFile) {
+            Timber.i("桥接补丁不在（非 azurpilot flavor），跳过重放")
+            return
+        }
+        val git = "git -c 'safe.directory=*'"
+        val cmd = "cd $GUEST_ALAS_ROOT && " +
+                "$git apply --3way seeds/azurpilot-android.patch || " +
+                "$git apply seeds/azurpilot-android.patch"
+        val r = runGuest(listOf("/bin/bash", "-c", cmd), SHORT_EXEC_MS) ?: return
+        if (r.exit == 0) {
+            Timber.i("桥接补丁已重放（热更新后）")
+        } else {
+            Timber.w("桥接补丁重放失败 exit=%s: %s", r.exit, r.output.takeLast(500))
+            _state.update {
+                it.copy(updateResult = (it.updateResult ?: "") + " | 桥接补丁重放失败，桥可能不可用")
+            }
+        }
     }
 
     /** assets_fix：幂等 + 漂移自检（Button 找不到会非零退出），失败只记警告 */
