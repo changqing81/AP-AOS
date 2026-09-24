@@ -65,7 +65,8 @@ current=""
 if [[ -f "$STATE_FILE" ]]; then
   current="$(cat "$STATE_FILE")"
 elif [[ -f BUILD_MANIFEST ]]; then
-  current="$(grep -o '"alas_commit": *"[0-9a-f]\{40\}"' BUILD_MANIFEST | grep -o '[0-9a-f]\{40\}' | head -1)"
+  # 字段名 M1 起为 upstream_commit（旧烘焙的 manifest 仍是 alas_commit，两个都认）
+  current="$(grep -oE '"(upstream|alas)_commit": *"[0-9a-f]{40}"' BUILD_MANIFEST | grep -o '[0-9a-f]\{40\}' | head -1)"
 fi
 
 # 失败退避：今天已败过一次就不再烧超时（次日自动恢复）
