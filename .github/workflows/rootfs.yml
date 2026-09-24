@@ -164,6 +164,23 @@ jobs:
           rm -rf rootfs-dist
           df -h /
 
+      # 诊断：从 runner 侧实测各 Maven 仓库对 KSP plugin marker 的可达性。
+      # run 35996898683 报 `Plugin [id: 'com.google.devtools.ksp', version: '2.3.9'] not found`
+      # 而该 artifact 在 Maven Central / Aliyun Central 上确实存在（本机 curl 200）
+      # → 需要区分「runner 到某源网络不通」还是「Gradle 仓库路由问题」。日志量极小。
+      - name: Probe plugin repositories (diagnostic)
+        run: |
+          P="com/google/devtools/ksp/com.google.devtools.ksp.gradle.plugin/2.3.9/com.google.devtools.ksp.gradle.plugin-2.3.9.pom"
+          for base in \
+            "https://maven.aliyun.com/repository/google" \
+            "https://maven.aliyun.com/repository/central" \
+            "https://dl.google.com/dl/android/maven2" \
+            "https://repo.maven.apache.org/maven2" \
+            "https://plugins.gradle.org/m2" ; do
+            code=$(curl -sS -m 25 -o /dev/null -w '%{http_code}' "$base/$P" 2>/dev/null || echo "CURL_ERR")
+            echo "  $code  $base"
+          done
+
       - name: Build debug APK
         run: |
           df -h /
