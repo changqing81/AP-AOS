@@ -4,6 +4,21 @@
 > **历史坑点（m0 阶段，全真机实证）见 `m0-archive/docs/debug.md` 与 `m0-archive/docs/devlog/`。** 高频索引：
 > WebView `vh` 塌缩（注入 innerHeight 修复）｜幻影进程查杀（`max_phantom_processes` / `settings_enable_monitor_phantom_procs`）｜mDNS `_adb-tls-connect` 端口过期但广播残留｜MaaFW PP-OCR 对 2D 单通道静默返空（堆叠 3ch）｜MaaFW 截图 BGR↔ALAS RGB 翻转｜RUN_COMMAND 权限只授清单声明方｜`am force-stop` 杀不掉 shell uid 残留（须显式 kill）｜桥 30s 无流量判死（10s 心跳）。
 
+## [2026-09-24] 「删掉配置」不等于「改掉行为」：action 默认值会接手（`sdkmanager tools` 两轮同死）
+
+- **现象**：CI 的 `apk` job 连续两轮死在**完全相同**的位置——第 5 步「Set up Android SDK」：
+  ```
+  [command]/usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager tools
+  Warning: Failed to find package 'tools'
+  Error: The process 'sdkmanager' failed with exit code 1
+  ```
+- **根本原因**：`android-actions/setup-android@v3` 的 `packages` 输入**默认值就是 `'tools platform-tools'`**，而 **`tools` 包在新版 cmdline-tools（16.0 / 12266719）里已被移除**。
+  第一轮我显式写了 `packages: tools platform-tools`（照抄老写法）→ 死；
+  第二轮我**把 `packages` 整个删掉**，以为能绕开 → **照样死**，因为「不写」= 用 action 默认值 = 默认值里同样带 `tools`。
+- **一条本可更早提示我的线索**：日志里跑的是 `sdkmanager tools`（**只有 `tools` 一个参数**，不是 `tools platform-tools`）→ 说明 action 是**逐包安装**，第一个包就失败退出，还没轮到第二个。
+- **解决方案**：显式覆盖为唯一有效包 `packages: platform-tools`。
+- **教训**：排查「配置改了却没生效」类问题时，**先查该配置项的默认值** —— 删掉覆盖项只是把控制权交还给默认值，**不等于禁用该行为**。要么显式写有效值，要么把该能力整体关掉。
+
 ## [2026-09-24] 换上游时「写死的 ALAS 假设」会静默把整个 rootfs 换成另一个项目
 
 - **现象**：换上游（ALAS → AzurPilot）后，设备端热更新一旦真的跑起来，会把 `/opt/alas` 整棵树 `git reset --hard` 成 **ALAS 源码**。运行环境被悄悄换成另一个项目，而症状是「更新后一堆怪错」——**几乎不可能联想到是热更新换掉了树**（我方桥接补丁也会随之全部失配）。
