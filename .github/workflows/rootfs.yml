@@ -95,6 +95,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      # GHA ubuntu-24.04 runner 约 14GB 可用磁盘，而本 job 的占用估算约 10GB：
+      # NDK ~3.5GB + rootfs.tar.xz 770MB（拷进 assets 后是两份）+ Gradle 依赖 ~1GB
+      # + APK 输出 ~800MB + 构建中间产物 ~1GB。不清理极易在打包阶段
+      # "No space left on device"。这些是 runner 预装但 APK 构建用不到的大户。
+      # 刻意保留 /usr/local/lib/android/sdk 下的 platform-tools / platforms /
+      # build-tools（AGP 会复用），只删 emulator 与 system-images。
+      - name: Free disk space
+        run: |
+          echo "--- 清理前 ---"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android/sdk/emulator \
+            /usr/local/lib/android/sdk/system-images \
+            2>/dev/null || true
+          echo "--- 清理后 ---"; df -h /
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -138,14 +157,20 @@ jobs:
           cp rootfs-dist/rootfs.tar.xz app/app/src/main/assets/rootfs/rootfs.tar.xz
           cp rootfs-dist/BUILD_MANIFEST app/app/src/main/assets/rootfs/BUILD_MANIFEST
           ls -la app/app/src/main/assets/rootfs/
+          # 已拷进 assets，原始那份不再需要（省 ~770MB；本 job 不再上传 rootfs）
+          rm -rf rootfs-dist
+          df -h /
 
       - name: Build debug APK
         run: |
+          df -h /
           cd app
           ./gradlew --no-daemon :app:assembleDebug --console=plain
 
       - name: Report APK
-        run: ls -la app/app/build/outputs/apk/debug/
+        run: |
+          ls -la app/app/build/outputs/apk/debug/
+          df -h /
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
