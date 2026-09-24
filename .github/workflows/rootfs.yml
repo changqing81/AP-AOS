@@ -20,6 +20,13 @@ jobs:
   build:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
+    # 显式钉死**构建期**的 PyPI 源：CI runner 在海外，阿里云镜像常不可达。
+    # 实证 run 36014629599：uv sync 拉 pywebio-1.7.1.tar.gz 重试 3 次、超时 128.8s → rootfs 烘焙挂。
+    # build-rootfs.sh 的默认值本就是官方源（devlog 记过这次修正），但**仓库级 env/变量可能
+    # 把它覆盖回 aliyun** —— 这里在 job 级再钉一次，不依赖仓库设置。
+    # 注意：与设备侧运行时无关 —— env_fix.sh 仍用阿里云（手机在大陆），二者不要混。
+    env:
+      PYPI_MIRROR: https://pypi.org/simple
     steps:
       - name: Checkout
         uses: actions/checkout@v4
