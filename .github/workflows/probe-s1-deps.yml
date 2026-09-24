@@ -1,0 +1,62 @@
+name: probe-s1-deps
+
+# AP-AOS · M0-S1 探针：Azurpilot-Auto 依赖在 Ubuntu 26.04 + aarch64 + Python 3.14 上能否装成
+#
+# 独立探针，**不触碰** rootfs.yml / build-rootfs.sh / 任何既有构建资产。
+# 触发路径刻意限定在 spike/** 与自身：rootfs.yml 的触发条件是 push 到 rootfs/**，
+# 探针若放 rootfs/ 下会连带触发一次 120 分钟的全量 rootfs 构建。
+#
+# 产物：probe-s1-log artifact（含 probe-s1.log 全文 + OCR 模型体积核算输出）。
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'spike/s1-deps/**'
+      - '.github/workflows/probe-s1-deps.yml'
+
+concurrency:
+  group: probe-s1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Runner info
+        run: |
+          uname -m
+          nproc
+          df -h
+          cat /etc/os-release | head -2
+
+      # 主戏：建 Ubuntu 26.04.1 aarch64 chroot → 装 uv → 抽上游 pyproject 依赖
+      # → uv venv + uv pip install（opencv 已替换为 headless）→ uv sync 保真度测试
+      # → import 门禁（核心组硬失败 / 次要组报告）→ 汇总
+      # 脚本自带 sudo 自提权（chroot/mount 需要 root）
+      - name: S1 probe (deps installability)
+        run: bash spike/s1-deps/probe.sh
+
+      # 顺带算体积账（M5 体积预算的输入）：Azurpilot 把 OCR 模型入库在 bin/ 下，
+      # 而 rootfs.tar.xz 在 APK 里是 noCompress，体积 1:1 进包，必须先算清。
+      # 用 workflow 的 token 认证，避免未认证 API 限流（60 次/小时）。
+      - name: OCR model / asset size audit
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 spike/s1-deps/ocr-model-sizes.py --budget 200
+
+      - name: Upload probe log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-s1-log
+          path: |
+            probe-work/probe-s1.log
+          retention-days: 14
+          if-no-files-found: warn
