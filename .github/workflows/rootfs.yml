@@ -28,16 +28,22 @@ jobs:
       - name: Build rootfs
         run: bash rootfs/build/build-rootfs.sh
 
-      # Spike F 门禁（rootfs/build/spike-f-ocr-gate.py，并行任务提供）的 CLI 为
-      # --model-dir/--rpc-path/...，不支持 --chroot——故用 chroot 等价写法：
-      # 门禁已随构建装入 /opt/alas/，chroot 进 work/rootfs 跑。
-      # 注意：**必须用 venv 的解释器**——M1 起依赖装在 /opt/alas/.venv，
-      # 系统 python3（3.14.4）没有 numpy/cv2/onnxruntime，用它跑必然 ImportError。
-      # TODO: 若门禁脚本日后支持 --chroot，可简化为宿主机直调
-      #   python3 rootfs/build/spike-f-ocr-gate.py --chroot work/rootfs
-      # 注：rootfs 内无中文字体（--font 缺省），合成图用例按门禁语义记 SKIP，不影响 PASS 判定
+      # Spike F 门禁是 **ALAS 时代对我方 in-proc OCR shim 的验收测试**：
+      # 它用 --rpc-path 指向的 rpc.py 必须暴露我方 shim 的接口（alive()/模型加载）。
+      # flavor=azurpilot 下按冻结决策「OCR 走原生」——上游 rpc.py **不被覆盖**，
+      # 我方 shim 只放在 seeds/ocr_fallback/ 作兜底，所以这个门禁对 azurpilot 无意义。
+      # （首跑 run #35984307419 即因此 FAIL：[FAIL] model_load  alive() is False）
+      # 自检测而非加配置：seeds/ocr_fallback/rpc.py 存在 ⇔ 上游 OCR 保持原生。
+      # TODO(M0-S2)：为 azurpilot 补一个**原生 OCR 门禁**（可参考 wess09 的
+      #   rootfs/build/azurpilot-ocr-gate.py），在那之前 azurpilot 跳过本步骤。
       - name: Spike F OCR gate
         run: |
+          if [ -f work/rootfs/opt/alas/seeds/ocr_fallback/rpc.py ]; then
+            echo "flavor=azurpilot（检测到 seeds/ocr_fallback/）：OCR 走上游原生实现"
+            echo "Spike F 是 ALAS 时代对我方 shim 的验收，对 azurpilot 不适用 → 跳过"
+            echo "原生 OCR 门禁待 M0-S2 补齐（见 docs/upstream-swap-azurpilot.md §12）"
+            exit 0
+          fi
           # 构建脚本打包前已显式卸载全部 bind mount；chroot 跑门禁前重新挂上
           # （onnxruntime 的 CPU 拓扑探测读 /sys，缺 /proc /sys /dev 时行为不确定）
           for d in dev proc sys; do sudo mount --bind /$d work/rootfs/$d; done
@@ -53,4 +59,5 @@ jobs:
           path: |
             dist/rootfs.tar.xz
             dist/BUILD_MANIFEST
+            dist/SIZE_REPORT.txt
           retention-days: 14

@@ -479,6 +479,31 @@ rm -rf "$ROOTFS_DIR/opt/alas/.git"
 find "$ROOTFS_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 rm -rf "$ROOTFS_DIR/root/.cache" "$ROOTFS_DIR/var/lib/apt/lists"/*
 
+# ---------- 9.5 体积分解报告（打包前） ----------
+# 首跑（run #35984307419）rootfs.tar.xz 达 **807MB**，远超 400MB 告警线（目标 ~250MB）。
+# 打包前先看清大头在哪，否则裁剪是瞎猜。报告进日志，也落 dist/ 随 artifact 上传。
+report_size() {
+  local out="$DIST_DIR/SIZE_REPORT.txt"
+  {
+    echo "=== rootfs 体积分解（打包前，已剔除 .git 与 __pycache__）==="
+    echo "--- 总计 ---"
+    du -sm "$ROOTFS_DIR"
+    echo
+    echo "--- /opt/alas 顶层（前 25）---"
+    du -sm "$ROOTFS_DIR/opt/alas"/* 2>/dev/null | sort -rn | head -25
+    echo
+    echo "--- venv 总计 ---"
+    du -sm "$ROOTFS_DIR/opt/alas-venv" 2>/dev/null
+    echo "--- venv site-packages（前 25）---"
+    du -sm "$ROOTFS_DIR/opt/alas-venv"/lib/python*/site-packages/* 2>/dev/null | sort -rn | head -25
+    echo
+    echo "--- 其余顶层目录 ---"
+    du -sm "$ROOTFS_DIR"/* 2>/dev/null | sort -rn | head -15
+  } | tee "$out"
+  log "体积分解报告已写入: $out"
+}
+report_size
+
 OUT="$DIST_DIR/rootfs.tar.xz"
 # --one-file-system 双保险：即使有残留挂载也不会把宿主文件系统打进包；
 # XZ_OPT=-T0 多线程压缩（单线程 xz 压 ~600MB 要几分钟）
