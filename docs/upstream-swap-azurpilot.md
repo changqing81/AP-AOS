@@ -537,6 +537,45 @@ Azurpilot 顶层 `webapp/` 是 pnpm workspace（Vue/TS），一度担心运行�
 | **朴素替换**（Azurpilot 源码原样烘入） | ~573 MB | **~650 MB** | 比先前估的 450MB 严重得多——`bin/` 实测 322.8MB，不是研究员初估的 120MB |
 | **裁剪后目标** | ~275–300 MB | **~350–375 MB** | 见 §13.3；**设 400MB 硬线纳入 DoD** |
 
+### 13.2.2 实测体积分解（2026-09-24，构建全绿后）——**推翻 §13.2 的判断**
+
+M1 构建链全绿后（run `35985087081`）拿到真实分解，**结论与 §13.2 相反**：
+
+```
+rootfs 未压缩总计 2279 MB  →  rootfs.tar.xz 808 MB（目标 ~250MB，告警线 400MB）
+
+/opt        1574 MB
+  ├─ /opt/alas-venv   1045 MB   ← 真正的体积黑洞
+  └─ /opt/alas         450 MB   （bin 223 / assets 156 / models 30 / module 24）
+/usr         497 MB
+/var         208 MB   （原因待查，已加清理）
+```
+
+**§13.2 的方向错了**：那里盯着 `bin/ocr_models`（322MB）做裁剪，而 **venv 是它的 3 倍多**。AzurPilot 的 Python 依赖集远比 ALAS 重。
+
+**venv 内 top 包**：
+
+| 包 | MB | 备注 |
+|---|---|---|
+| `llvmlite` | **168** | numba 的 LLVM 后端 |
+| `opencv_python.libs` + `cv2` | 123 | |
+| `scipy` + `scipy.libs` | 120 | |
+| `av` + `av.libs` | **93** | PyAV；aiortc 的依赖，而 RemoteAccess 已禁用 |
+| `imageio_ffmpeg` | **49** | 内含 ffmpeg 二进制 |
+| `onnxruntime` | 44 | |
+| `rapidocr` | 31 | |
+| `numpy` + `numpy.libs` | 55 | |
+| `matplotlib` + `fontTools` | **52** | |
+| `numba` | 18 | |
+
+**已加入的两个诊断工具**（commit `93973b1`）：
+1. **体积报告细化**：/opt 顶层、alas 顶层前 15、venv `site-packages` 前 30、/var 与 /usr 顶层
+2. **依赖可达性探针** `probe_dep_usage()`：扫描上游源码里 35 个候选包的 import 命中数，**回答「哪些大包可以安全删」**——不再凭估算裁剪。宿主侧直读（只扫文件，不需 chroot）。结果落 `dist/DEP_USAGE.txt`。
+
+> ⚠️ 裁剪红线（§11.1 第 6 条）依旧成立：删错一个默认路径加载的包会让 `handle_ocr_error` 抛 `RequestHumanTakeover`（硬中断）。所以依赖裁剪必须**先看可达性报告，再做**，并配一次 post-trim 冒烟。
+
+**架构级含义**：AzurPilot 的依赖集（numba/llvmlite、av、matplotlib、onnxruntime、ncnn、rapidocr、opencv）比 ALAS 重得多，「全塞进 APK」的模式被严重拉伸。即便激进裁剪，乐观估计也难回到 250MB。**这已不只是「裁剪技巧」问题，而是一个需要决策的架构问题**：接受大包 / 拆包分发（首启下载运行时，即 wess09 的 `runtime.tar.xz` 通道）/ 砍功能。
+
 ### 13.3 体积裁剪杠杆（据实测重排，按收益）
 
 | # | 杠杆 | 实测收益 | 说明 |
@@ -558,6 +597,32 @@ Azurpilot 顶层 `webapp/` 是 pnpm workspace（Vue/TS），一度担心运行�
 | 稳妥（small 档 + onnx） | rec small 20.2 + det small 9.4 + 词表 0.12 + cls 0.6 | **30.3 MB** | **省 258 MB** |
 
 → **单靠 1–6 号杠杆，APK 就能从朴素的 ~650MB 拉回 ~350MB 量级，与现状 327MB 基本持平。** 体积问题完全可控，但**必须在 `build-rootfs.sh` 里显式做裁剪**，不能原样烘入。
+
+### 13.3.1 基于证据的裁剪方案（2026-09-24，依赖可达性探针实测）
+
+`/var` 清理后 tar.xz 已从 808MB → **693MB**。剩余大头：venv 1045 / alas 442 / usr 369 / uv-python 88（MB）。
+
+**探针结论**（扫 2031 个上游 .py 文件）：
+
+| 包 | MB | 源码命中 | 唯一用途 | 分组 |
+|---|---|---|---|---|
+| `llvmlite` | **168** | **0** | numba 的 LLVM 后端 | B |
+| `numba` | 18 | 1 | `module/os_simulator/simulator.py`（大世界蒙特卡洛模拟器） | B |
+| `av` + `av.libs` | **93** | 1 | `module/device/method/scrcpy/core.py`（**本仓用桥，不用 scrcpy**） | B |
+| `matplotlib` + `fontTools` | 52 | 1 | `module/os_simulator/plotter.py` | B |
+| `imageio_ffmpeg` | 49 | 2 | `module/base/debug_clip.py`（调试录像） | B |
+| `uvloop` | 16 | **0** | uvicorn 的 perf extra | A |
+| `Crypto` | 9 | **0** | — | A |
+| `gevent` | 8 | **0** | zerorpc 路径（默认不启用） | A |
+| `pylibsrtp` / `sse_starlette` / `watchdog` | ~10 | **0** | — | A |
+
+**A 组（零功能损失，源码 0 命中）**：约 **43MB**。可直接做，风险极低。
+**B 组（功能裁剪，需决策）**：约 **380MB**。代价是失去：大世界蒙特卡洛模拟器（含绘图）、scrcpy 设备通道、调试录像。
+**C 组（资源裁剪）**：`bin/` 223MB → aggressive OCR 档位裁剪至 ~57MB，**省 166MB**（需 S2 精度验证；红线见 §11.1 第 6 条）。
+
+**合计潜力 ≈ 590MB** → 未压缩 ~1490MB → tar.xz 估计 **~450–500MB** → APK ~530–580MB。
+
+> **结论：即便 A+B+C 全做，也难回到 400MB 以内。** 地板由这些构成：`/usr` 369MB（OS + GL/X11 库）、`assets` 156MB（模板图库）、venv 核心（scipy 120 + opencv 123 + onnxruntime 44 + numpy 55 + rapidocr 31 ≈ 373MB）、`uv-python` 88MB。**这是 AzurPilot 依赖集的固有重量，不是裁剪技巧能解决的**——详见 §13.2.2 的架构级含义。
 
 ### 13.4 对已确认决策的反馈
 
@@ -746,4 +811,36 @@ wess09 复用了 App 外壳（Kotlin），但 rootfs 侧完全重写。**我方�
 
 ---
 
-> 本文为方案稿。§1–§7 为现状分析与改造设计；§8 起为 2026-09-24 用户拍板后的**冻结决策与展开方案**；§15 为当日发现的并行工作与上游分叉。所有对目标仓库的判断均基于只读源码核查；标注「待确认」的项需实测。
+## 16. 运行面差异：日志布局（2026-09-24 核实上游源码）
+
+换上游后 App 侧「ALAS 日志页」的两个数据源**同时失效**。这条容易被忽略——
+构建期一切正常，只有装到手机上打开日志页才会发现。
+
+| 项 | ALAS（App 侧原有假设） | AzurPilot（上游实际，见 `module/logger.py`） |
+|---|---|---|
+| 日志文件名 | `{YYYY-MM-DD}_{config}.txt` | **`log/{name}.txt`**（如 `alas.txt`），无日期前缀 |
+| 写入方式 | 每天新建文件 | `TimedRotatingFileHandler` **午夜轮转** |
+| 历史日志 | 散在 `log/` 同目录 | 轮转进 **`log/bak/`**（copy ⇒ `bak/alas.txt.2026-09-23`；gui 进程用 zip） |
+| 错误现场 | `log/error/{毫秒}/`（log.txt + 截图） | **不存在** —— 错误改由 `error_context()` 结构化写进日志正文 |
+| 清理 | 无（靠 App 的 `LogCleaner`） | 上游自带 `LogKeepCount=7` + `_clean_orphan_logs()` |
+
+**App 侧处置**（`AlasLogSource.kt`，改动集中在一个文件）：
+
+1. `dailyLogs()` 同时收 `log/` 与 `log/bak/`，按 mtime 倒序合并；
+   新增 `isPlainTextLog()` 排除 zip/tar/bz2 —— gui 进程用 zip 模式轮转，
+   点开只会显示乱码。
+2. `dailyFile(name)` 先查 `log/` 再查 `log/bak/`，让归档条目可点开。
+3. `errorDirs()` 在新上游下恒空 —— **UI 无需改**：`AlasLogScreen` 有
+   `isNotEmpty()` 判断，「错误记录」分区自然不渲染；实现保留以兼容 flavor=alas。
+
+**副作用核查（都安全）**：`LogCleaner` / `LogExportCollector` 都靠文件名前 10 字符
+解析 `yyyy-MM-dd`；新命名（`alas.txt` / `alas.txt.2026-09-23`）解析失败即跳过
+→ 清理自动 no-op（**不会误删**）、导出保留全部（宁多不少）。两处均无需改动。
+
+> 附带一条实测事实：日志页在 AzurPilot 下**不会全空** —— `dailyLogs()` 原本就只
+> 按 `.txt` 后缀过滤（不校验日期前缀），`alas.txt` 能正常列出。真正丢失的只有
+> `bak/` 里的历史轮转日志。
+
+---
+
+> 本文为方案稿。§1–§7 为现状分析与改造设计；§8 起为 2026-09-24 用户拍板后的**冻结决策与展开方案**；§15 为当日发现的并行工作与上游分叉；§16 为运行面（日志布局）差异。所有对目标仓库的判断均基于只读源码核查；标注「待确认」的项需实测。
