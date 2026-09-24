@@ -673,6 +673,77 @@ uv venv .venv --python "$(uv python find 3.14)"
 - `uv==0.11.32` 被上游**列为运行时依赖**（不只是构建工具）。
 - `onnxruntime==1.27.0; sys_platform=='linux'`——已确认装上并 import OK。
 
+## 15. 并行工作与上游分叉（2026-09-24 发现，**需要拍板**）
+
+用户提供了 `wess09/ALAS-AOS` 的 `codex/azurpilot-android-verify` 分支。核查后确认了一件必须让决策者知道的事：
+
+> **`wess09`（茗）就是 AzurPilot 的原作者**。他 fork 了同一个仓库（基线正是我们推送前的 `adc9f19a`），并在 **同一天**做**同一件事**（分支名含 `codex`，疑为 AI 辅助）。核心提交 `32f3f10f feat: adapt Android runtime for AzurPilot master`，规模 +1,864 / −33,893。
+
+### 15.1 他的路线 ≠ 我们的路线
+
+| | 我们的路线（增量换源） | wess09 的路线（重建） |
+|---|---|---|
+| ALAS 时代 overlay | **保留并移植**（`wrapper.py`/`runner.py`/`rpc.py`/`al_numpy.py`/`seeds/*`） | **全删** |
+| guest 侧进程管理 | 我们的 `wrapper.py` + `runner.py` | **AzurPilot 原生 `RuntimeService` + `ProcessManager`** |
+| 端口 | 沿用 22267 / 22300 / 22400 | **改为 WebUI 25548 / 桥 22301**（与旧版分离，双包并存） |
+| 包名 | 沿用 `io.github.shinarin.alasaos` | 新建 `io.github.shinarin.azurpilotandroid` |
+| 上游适配 | 9 个整文件补丁 → 计划改最小 diff | **单一 `rootfs/patches/azurpilot-android.patch`** |
+| 更新通道 | 设备端热更新（git / CDN pack） | **`runtime.tar.xz` + `latest.json` 运行时包** |
+| 构建脚本 | 改造 `build-rootfs.sh` | 新建 `build-azurpilot.sh` |
+| 验收状态 | S1 ✅；rootfs 构建 ❌（依赖解析） | **同样未验证**（README 明说「请勿当作可安装成品」） |
+
+### 15.2 应直接吸收的 4 处技术（无论最终选哪条路线）
+
+1. **不升 base**：保留 **Ubuntu 24.04.5**，用 `uv python install 3.14.6` + **`UV_PYTHON_PREFERENCE=only-managed`** 提供 Python。
+   → 我方升 26.04 是**多余的**：26.04 只给到 3.14.4（仍不满足 requires-python），而换 base 要重新验证整个 apt/系统层。`only-managed` 是关键 flag——否则 uv 可能挑中发行版 python。
+2. **venv 移出源码树**：`mv /opt/azurpilot/.venv /opt/azurpilot-venv` + `ln -s ../azurpilot-venv .venv`
+   → **源码热更新时不触碰已验依赖环境**。这比「CDN 增量包」更简单地解决了 M0-S4 的体积难题——**直接采纳**。
+3. **装 GL/X11 库**：`libgl1 libstdc++6 libatomic1 libsm6 libxext6 libsndfile1 libvulkan1`
+   → `libgl1` 会拉进 `libx11`/`libxcb`，我们踩的 `libxcb.so.1` 问题自然消失；`libvulkan1` 让 ncnn 后端可用。
+4. **用 `uv sync` 而非自己抽 requirements + `uv pip install`**：`uv sync` 会读取 pyproject 的**全部**配置，包括 `[tool.uv] override-dependencies`——**这正是我们 rootfs 构建失败的原因**（见 §15.4）。wess09 还额外用了 `--frozen`（依赖 `uv.lock`；注意我们目标仓**没有** `uv.lock`，故只能用不带 `--frozen` 的 `uv sync`）。
+
+其他可借鉴：`dev_tools.import_smoke_test` 内置冒烟、`rootfs_version` 取上游 commit 前 12 位、`AZURPILOT_ANDROID=1` 环境变量门控 Android 行为、Gradle `verifyBundledAzurPilotRuntime` 校验任务。
+
+### 15.3 🔴 上游分叉：我们选的目标仓落后于上游主线
+
+| | `changqing81/Azurpilot-Auto` master（我们的目标） | `wess09/AzurPilot` master（上游主线） |
+|---|---|---|
+| `frontend/`（React + Vite + TS，带 playwright/vitest） | ❌ **没有** | ✅ 有 |
+| `module/api/`（FastAPI + WebSocket） | ❌ **没有** | ✅ 有（12 文件，含 `runtime_service.py`/`socket.py`/`static.py`） |
+| WebUI 形态 | pywebio `module/webui/` + `webapp/`(pnpm/Vue) | **FastAPI + WebSocket + React** |
+| 活跃度 | — | **极高**：24h 内 19+ 提交、PR #1042–#1046、仍在 merge `lme/master` |
+
+**含义**：若坚持用 `changqing81/Azurpilot-Auto` 作上游，我们是在**旧架构**上做适配，且拿不到 React WebUI 与 `RuntimeService`；而 wess09 的 Android 适配正是基于新架构。**这条需要决策者明确选择上游。**
+
+### 15.4 我们的 rootfs 构建失败原因（run `35983440584`，3 分钟即挂）
+
+**与 base 升级无关**，是依赖解析失败：
+
+```
+error: No solution found when resolving dependencies
+  cause: Because uiautomator2==2.16.17 depends on packaging>=20.3,<21.dev0
+         and you require packaging==24.2, we can conclude that your requirements are unsatisfiable.
+```
+
+**上游 pyproject 自相矛盾**：同时钉了 `uiautomator2==2.16.17`（要求 `packaging<21`）与 `packaging==24.2`。
+**为什么探针能过**：探针额外把 `[tool.uv] override-dependencies` 抽出来传了 `--override`，构建脚本没传。
+**修法**：改用 `uv sync --no-dev`（读 pyproject 全部配置），与 wess09 一致。
+
+### 15.5 我们的相对优势（不应被抹掉的部分）
+
+wess09 复用了 App 外壳（Kotlin），但 rootfs 侧完全重写。**我方独有且已真机验证的资产**：
+- 特权进程 + 虚拟屏 + 桥（22300 五端点）—— m0 实测 p50 109ms / 1800 次零失败，v0.1.4 装机可用
+- 真机调试闭环经验与 `debug.md` 全部坑点（含手势劫持红线、VD flag 硬约束、幻影进程查杀）
+- Shizuku 冲突引导、悬浮窗、日志中心等 App 侧已交付功能
+
+→ 无论选哪条路线，这些都不该丢。
+
+### 15.6 建议
+
+1. **立即吸收 §15.2 的 4 处技术**（与路线选择无关，纯赚）；
+2. **上游选择要单独拍板**：`wess09/AzurPilot`（新架构、活跃、原作者在维护）vs `changqing81/Azurpilot-Auto`（老架构、我们已摸清）；
+3. **考虑协作而非并行**：他与我们同仓库、同基线、同一目标，且**双方都还没验证成功**。并行重复劳动的性价比低——是否联系/复用，请决策者定。
+
 ---
 
-> 本文为方案稿。§1–§7 为现状分析与改造设计；§8 起为 2026-09-24 用户拍板后的**冻结决策与展开方案**。所有对目标仓库的判断均基于 `changqing81/Azurpilot-Auto@master` 的只读源码核查；标注「待确认」的项需在 M0 Spike 中实测。
+> 本文为方案稿。§1–§7 为现状分析与改造设计；§8 起为 2026-09-24 用户拍板后的**冻结决策与展开方案**；§15 为当日发现的并行工作与上游分叉。所有对目标仓库的判断均基于只读源码核查；标注「待确认」的项需实测。

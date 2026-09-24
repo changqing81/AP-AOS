@@ -2,33 +2,44 @@
 # =============================================================================
 # AP-AOS · rootfs 烘焙（M1 上游参数化改造，2026-09-24）
 #
-# 烘焙 Ubuntu ARM64 rootfs：ubuntu-base 26.04.1 LTS + 上游（Azurpilot/ALAS）
+# 烘焙 Ubuntu ARM64 rootfs：ubuntu-base 24.04.5 LTS + 上游（Azurpilot/ALAS）
 # + uv 托管 Python + 依赖 + OCR 模型 + wrapper/runner/patches
 #
 # 运行环境：GitHub Actions `ubuntu-24.04-arm` runner（原生 aarch64，chroot 无需 qemu）。
 # 本机（Windows + Git Bash）不可执行：核心动作是 chroot / mount --bind / GNU tar，
 # Windows 无这些语义；本机只做 `bash -n` 语法检查与 rootfs/ 资产 curated。
 #
-# ── M1 相对旧版的 5 处改造 ──────────────────────────────────────────────────
-# 1) 上游参数化：新增 UPSTREAM_FLAVOR（azurpilot | alas）+ UPSTREAM_REPO/REF，
-#    旧变量名 ALAS_REPO/ALAS_REF 保留为别名（向后兼容既有 CI 调用）。
-# 2) base 升级：ubuntu-base 24.04.5 → 26.04.1 LTS（Python 3.14），并**新增 sha256 校验**。
-# 3) Python 与依赖：发行版 python3 是 3.14.4，不满足上游 requires-python（>=3.14.6）
-#    → 改用 **uv 托管的 python-build-standalone**，依赖装进 /opt/alas/.venv。
-#    依赖清单对 azurpilot 走「从上游 pyproject.toml 现场抽取」，对 alas 仍用 curated 列表。
-# 4) 体积裁剪：新增 trim_payload()，按 TRIM_LEVEL（conservative | aggressive）裁掉
+# ── M1 改造要点（2026-09-24 修订：吸收 wess09/AzurPilot 作者的并行方案）────────
+# 1) 上游参数化：UPSTREAM_FLAVOR（azurpilot | azurpilot-upstream | alas）
+#    + UPSTREAM_REPO/REF；旧变量名 ALAS_REPO/ALAS_REF 保留为别名。
+# 2) **base 保持 Ubuntu 24.04.5，不升 26.04**（修订）。
+#    原计划升 26.04 是多余的：26.04 自带的 python3 是 3.14.4，**仍不满足**上游
+#    requires-python（>=3.14.6），而换 base 要重新验证整个 apt/系统层。正解是
+#    用 uv 的 python-build-standalone 提供解释器（见 3），base 版本与之无关。
+# 3) Python 与依赖（修订）：
+#    - `uv python install 3.14.6` + **UV_PYTHON_PREFERENCE=only-managed**，确保 uv
+#      只用自己托管的解释器，不会被发行版 python 3.14.4 截胡；
+#    - 依赖用 **`uv sync`**（读 pyproject 的**全部**配置，含 [tool.uv]
+#      override-dependencies —— 上游靠 `packaging==24.2` 这条 override 解开
+#      uiautomator2==2.16.17 的 packaging<21 冲突；自己抽 requirements 会漏掉它，
+#      首跑 rootfs 构建正是因此失败）；
+#    - venv 建在**源码树之外**（/opt/alas-venv，用 UV_PROJECT_ENVIRONMENT 直接建在
+#      终位，不靠 mv），再软链 /opt/alas/.venv → ../alas-venv。这样**上游源码热更新
+#      不会触碰已验依赖环境**——比自建 CDN 增量包简单得多。
+# 4) 体积裁剪：trim_payload()，按 TRIM_LEVEL（conservative | aggressive）裁掉
 #    确定不用的模型与 Android 侧推装件（详见该函数注释）。
 # 5) BUILD_MANIFEST 契约：alas_* → upstream_*，新增 flavor / guest_python / trim_level。
 #    rootfs_version 默认 0.2.0（**必须与上一版不同**，否则设备侧不重解新 rootfs）。
 #
 # 环境变量（冒号后为默认值）：
-#   UPSTREAM_FLAVOR    azurpilot           上游口味：azurpilot | alas
+#   UPSTREAM_FLAVOR    azurpilot           上游口味（见文件内 flavor 表）
 #   UPSTREAM_REPO      <按 flavor 派生>
 #   UPSTREAM_REF       master              分支/tag；40 位 sha 则按 commit 浅 fetch
+#   PYTHON_VERSION     3.14.6              uv 托管的 Python 版本（需满足上游 requires-python）
 #   ROOTFS_VERSION     0.2.0               写入 BUILD_MANIFEST.rootfs_version
 #   TRIM_LEVEL         conservative        conservative | aggressive | none
-#   UBUNTU_BASE        cdimage ubuntu-base 26.04.1 LTS arm64
-#   UBUNTU_BASE_SHA256 5a190679…b219fd     取自官方 SHA256SUMS，硬钉防上游替换
+#   UBUNTU_BASE        cdimage ubuntu-base 24.04.5 LTS arm64
+#   UBUNTU_BASE_SHA256 a91d5a93…914f2      取自官方 SHA256SUMS（置空则跳过校验）
 #   WORK_DIR           $GITHUB_WORKSPACE/work
 #
 # 产物：
@@ -40,8 +51,15 @@ set -euo pipefail
 # ---------- 0. 参数与 flavor 解析 ----------
 UPSTREAM_FLAVOR="${UPSTREAM_FLAVOR:-azurpilot}"
 case "$UPSTREAM_FLAVOR" in
+  # 用户自有 fork（旧架构：pywebio WebUI + module/webui/；无 frontend/、无 module/api/）
   azurpilot)
     _default_repo="https://github.com/changqing81/Azurpilot-Auto.git"
+    _default_ref="master"
+    ;;
+  # 上游主线（新架构：FastAPI module/api/ + React frontend/），AzurPilot 原作者在维护，
+  # 活跃度极高。若决定切到新架构，把 UPSTREAM_FLAVOR 改成这个即可（见文档 §15.3）。
+  azurpilot-upstream)
+    _default_repo="https://github.com/wess09/AzurPilot.git"
     _default_ref="master"
     ;;
   alas)
@@ -49,7 +67,7 @@ case "$UPSTREAM_FLAVOR" in
     _default_ref="master"
     ;;
   *)
-    echo "::error::未知 UPSTREAM_FLAVOR: $UPSTREAM_FLAVOR（期望 azurpilot | alas）"
+    echo "::error::未知 UPSTREAM_FLAVOR: $UPSTREAM_FLAVOR（期望 azurpilot | azurpilot-upstream | alas）"
     exit 1
     ;;
 esac
@@ -59,10 +77,13 @@ UPSTREAM_REF="${UPSTREAM_REF:-${ALAS_REF:-$_default_ref}}"
 # 注：GHA runner 在海外，GitHub 原生最快；gitee 同名镜像对匿名克隆要凭证（401），勿用。
 # 国内本地复现构建时可 export UPSTREAM_REPO=<可达镜像>；runtime 更新镜像由 deploy.yaml 管。
 
+PYTHON_VERSION="${PYTHON_VERSION:-3.14.6}"
 ROOTFS_VERSION="${ROOTFS_VERSION:-0.2.0}"
 TRIM_LEVEL="${TRIM_LEVEL:-conservative}"
-UBUNTU_BASE="${UBUNTU_BASE:-https://cdimage.ubuntu.com/ubuntu-base/releases/26.04/release/ubuntu-base-26.04.1-base-arm64.tar.gz}"
-UBUNTU_BASE_SHA256="${UBUNTU_BASE_SHA256:-5a1906794ced63a71a8119c3f211ef5f0bbe0a243001b4bbd41fdf80c5b219fd}"
+# base 保持 24.04.5（**不升 26.04**，理由见文件头 2）。sha256 取自官方 SHA256SUMS；
+# 置空 UBUNTU_BASE_SHA256 可跳过校验（仅用于本地试验，CI 上不要关）。
+UBUNTU_BASE="${UBUNTU_BASE:-https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-arm64.tar.gz}"
+UBUNTU_BASE_SHA256="${UBUNTU_BASE_SHA256:-a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GITHUB_WORKSPACE="${GITHUB_WORKSPACE:-$REPO_ROOT}"
@@ -73,8 +94,12 @@ DIST_DIR="$GITHUB_WORKSPACE/dist"
 
 # guest 侧固定路径（**App 侧必须同源**：ProotHost.GUEST_PYTHON）
 GUEST_ALAS_ROOT="/opt/alas"
-GUEST_VENV="$GUEST_ALAS_ROOT/.venv"
-GUEST_PYTHON="$GUEST_VENV/bin/python"
+# venv 建在源码树**之外**：上游源码热更新（整目录替换 /opt/alas）时不触碰已验依赖环境。
+# /opt/alas/.venv 只是指向它的软链 —— 因此 App 侧 GUEST_PYTHON 仍是
+# /opt/alas/.venv/bin/python，三条同源路径不必因这次改造而变。
+GUEST_VENV="/opt/alas-venv"
+GUEST_VENV_LINK="$GUEST_ALAS_ROOT/.venv"
+GUEST_PYTHON="$GUEST_VENV_LINK/bin/python"
 
 # 构建期 pip 源：默认 PyPI 官方（GHA runner 在海外，直连最快最稳）；
 # 与设备运行时无关（InstallDependencies 已锁，rootfs 永不在设备上装包）。
@@ -120,24 +145,32 @@ chroot_run() {
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     UV_CACHE_DIR=/opt/uv-cache \
+    UV_PROJECT_ENVIRONMENT="$GUEST_VENV" \
+    UV_PYTHON_PREFERENCE=only-managed \
+    UV_DEFAULT_INDEX="$PYPI_MIRROR" \
+    UV_NO_PROGRESS=1 \
     "$@"
 }
 
 log "flavor=$UPSTREAM_FLAVOR repo=$UPSTREAM_REPO ref=$UPSTREAM_REF rootfs_version=$ROOTFS_VERSION trim=$TRIM_LEVEL"
 
-# ---------- 2. 下载并校验 ubuntu-base 26.04.1 ----------
+# ---------- 2. 下载并校验 ubuntu-base 24.04.5 ----------
 mkdir -p "$WORK_DIR" "$DIST_DIR"
-BASE_TAR="$WORK_DIR/ubuntu-base-26.04.1-arm64.tar.gz"
+BASE_TAR="$WORK_DIR/ubuntu-base-24.04.5-arm64.tar.gz"
 if [[ ! -f "$BASE_TAR" ]]; then
   log "下载 ubuntu-base: $UBUNTU_BASE"
   curl -fL --retry 3 -o "$BASE_TAR" "$UBUNTU_BASE"
 fi
-GOT_SHA="$(sha256sum "$BASE_TAR" | awk '{print $1}')"
-if [[ "$GOT_SHA" != "$UBUNTU_BASE_SHA256" ]]; then
-  echo "::error::ubuntu-base sha256 不符：期望 $UBUNTU_BASE_SHA256，实得 $GOT_SHA"
-  exit 1
+if [[ -n "$UBUNTU_BASE_SHA256" ]]; then
+  GOT_SHA="$(sha256sum "$BASE_TAR" | awk '{print $1}')"
+  if [[ "$GOT_SHA" != "$UBUNTU_BASE_SHA256" ]]; then
+    echo "::error::ubuntu-base sha256 不符：期望 $UBUNTU_BASE_SHA256，实得 $GOT_SHA"
+    exit 1
+  fi
+  log "ubuntu-base sha256 校验通过"
+else
+  log "WARN: UBUNTU_BASE_SHA256 为空，跳过校验（仅限本地试验，CI 上不要关）"
 fi
-log "ubuntu-base sha256 校验通过"
 
 rm -rf -- "${ROOTFS_DIR:?}/"
 mkdir -p "$ROOTFS_DIR"
@@ -176,12 +209,16 @@ mount_bind /proc "$ROOTFS_DIR/proc"
 mount_bind /sys "$ROOTFS_DIR/sys"
 
 # ---------- 4. chroot 内 apt：最小系统依赖 ----------
-# opencv-headless 运行只需 glib/gomp 级系统库；**不装 libgl1/libglx**——走了 headless
-# 变体，装了反而会掩盖 libGL 缺失类问题（与 M0-S1 探针同一取舍）
+# 修订（吸收 wess09 方案）：**不再回避 libgl1**。原因：rapidocr 声明依赖 `opencv-python`
+# （非 headless），会作为传递依赖装进来并与 opencv-python-headless 争同一个 `cv2/` 路径，
+# 最终 cv2 需要 libxcb.so.1 —— 无 X11 环境下 import 直接炸（M0-S1 run #35981880600 实测）。
+# **libgl1 会连带拉进 libx11/libxcb**，问题自然消失；libvulkan1 让 ncnn 的 Vulkan 后端可用；
+# libsndfile1 供音频路径。取舍：约 +10MB，换来不再跟 opencv 变体斗。
 chroot_run apt-get update
 chroot_run apt-get install -y --no-install-recommends \
   python3 python3-pip python3-venv git ca-certificates curl xz-utils \
-  libglib2.0-0t64 libgomp1
+  libglib2.0-0t64 libgomp1 libgl1 libstdc++6 libatomic1 \
+  libsm6 libxext6 libsndfile1 libvulkan1
 chroot_run /bin/bash -c 'rm -rf /var/lib/apt/lists/*'
 
 # 系统 python 仍供系统工具使用；deploy.yaml 里的 PythonExecutable 另指 venv
@@ -211,65 +248,31 @@ chroot_run python3 -m pip install --break-system-packages --no-cache-dir -q \
 UV_VER="$(chroot_run uv --version)"
 log "uv: $UV_VER"
 
-# uv 托管的 python-build-standalone：解「发行版 python 版本低于上游 requires-python」
-log "安装 uv 托管 Python 3.14（>=3.14.6）"
-chroot_run uv python install 3.14
-UV_PY_PATH="$(chroot_run uv python find 3.14 | tail -1)"
+# uv 托管的 python-build-standalone：解「发行版 python 版本低于上游 requires-python」。
+# 发行版 python3 是 3.14.4，上游要 >=3.14.6 —— 用 uv 自带解释器，与 base 版本无关。
+# UV_PYTHON_PREFERENCE=only-managed（在 chroot_run 里）确保不会被发行版 python 截胡。
+log "安装 uv 托管 Python $PYTHON_VERSION"
+chroot_run uv python install "$PYTHON_VERSION"
+UV_PY_PATH="$(chroot_run uv python find "$PYTHON_VERSION" | tail -1)"
 if [[ -z "$UV_PY_PATH" ]]; then
-  echo "::error::uv python find 3.14 未返回路径"
+  echo "::error::uv python find $PYTHON_VERSION 未返回路径"
   exit 1
 fi
-chroot_run uv venv "$GUEST_VENV" --python "$UV_PY_PATH"
-VENV_PY_VER="$(chroot_run "$GUEST_PYTHON" -c 'import platform; print(platform.python_version())')"
-log "venv python: $VENV_PY_VER（$GUEST_PYTHON）"
+log "uv 托管解释器: $UV_PY_PATH"
 
-if [[ "$UPSTREAM_FLAVOR" == "azurpilot" ]]; then
-  # 依赖清单从上游 pyproject.toml 现场抽取（忠实于上游 + opencv 变体替换），
-  # 平台 marker 原样透传，由 uv 按当前平台求值
-  log "从上游 pyproject.toml 抽取依赖（opencv-python → opencv-python-headless）"
-  chroot_run python3 - <<'PY'
-import pathlib
-import re
-import tomllib
-
-src = pathlib.Path('/opt/alas/pyproject.toml')
-if not src.is_file():
-    raise SystemExit('::error::上游缺少 pyproject.toml，无法抽取依赖')
-data = tomllib.loads(src.read_text(encoding='utf-8'))
-proj = data.get('project', {})
-deps = list(proj.get('dependencies', []) or [])
-
-
-def to_headless(spec: str) -> str:
-    """opencv-python -> opencv-python-headless。
-    本仓 rootfs 刻意不装 Qt/X11，opencv-python 轮子链接 libGL，import cv2 会炸。"""
-    if re.match(r'^opencv-python(\s|==|>=|<=|~=|>|<|$)', spec) and 'headless' not in spec:
-        return re.sub(r'^opencv-python', 'opencv-python-headless', spec, count=1)
-    return spec
-
-
-patched = [to_headless(d) for d in deps]
-out = pathlib.Path('/opt/alas/requirements.alasaos.txt')
-out.write_text('\n'.join(patched) + '\n', encoding='utf-8')
-print(f'[build-rootfs] 抽取 {len(deps)} 条依赖 -> {out}')
-print(f'[build-rootfs] requires-python = {proj.get("requires-python")}')
-PY
-  chroot_run uv pip install --python "$GUEST_PYTHON" -i "$PYPI_MIRROR" \
-    -r /opt/alas/requirements.alasaos.txt
-
-  # opencv 变体去重（M0-S1 run #35981880600 实测踩到的坑）：
-  # rapidocr 声明依赖 `opencv-python`（非 headless，链接 libGL/libxcb），会被作为
-  # **传递依赖**装进来，与我们要的 opencv-python-headless 争同一个 `cv2/` 路径 →
-  # cv2 变成需要 libxcb.so.1 的版本，在无 X11 的 rootfs 里 `import cv2` 直接炸。
-  # 只替换直接依赖不够，必须装完后卸掉非 headless 那份、再把 headless 重新铺回去。
-  OPENCV_SPEC="$(grep -iE '^opencv-python-headless' /opt/alas/requirements.alasaos.txt 2>/dev/null | head -1 || true)"
-  if [[ -n "${OPENCV_SPEC:-}" ]]; then
-    log "opencv 去重：卸掉非 headless 变体，重铺 $OPENCV_SPEC"
-    chroot_run uv pip uninstall --python "$GUEST_PYTHON" opencv-python
-    chroot_run uv pip install --python "$GUEST_PYTHON" -i "$PYPI_MIRROR" \
-      --reinstall "$OPENCV_SPEC"
+if [[ "$UPSTREAM_FLAVOR" == "azurpilot" || "$UPSTREAM_FLAVOR" == "azurpilot-upstream" ]]; then
+  # 用 **uv sync**，而非自己抽 requirements + uv pip install：
+  # uv sync 会读 pyproject 的**全部**配置，尤其是 [tool.uv] override-dependencies
+  # —— 上游靠 `packaging==24.2` 这条 override 解开 uiautomator2==2.16.17 的
+  # packaging<21 冲突。自己抽清单会漏掉 override，rootfs 首跑（run #35983440584）
+  # 正是死在这里（No solution found when resolving dependencies）。
+  # venv 由 UV_PROJECT_ENVIRONMENT 直接建在源码树之外（/opt/alas-venv，见文件头 3）。
+  if [[ -f "$ROOTFS_DIR$GUEST_ALAS_ROOT/uv.lock" ]]; then
+    log "检测到 uv.lock → 用 --frozen 保证可复现"
+    chroot_run /bin/bash -c "cd $GUEST_ALAS_ROOT && uv sync --frozen --no-dev --python $PYTHON_VERSION"
   else
-    log "requirements 里没有 opencv-python-headless，跳过去重"
+    log "无 uv.lock（上游未入库）→ 用 uv sync 现场解析（不可复现，但装得上）"
+    chroot_run /bin/bash -c "cd $GUEST_ALAS_ROOT && uv sync --no-dev --python $PYTHON_VERSION"
   fi
 else
   # curated 依赖列表（flavor=alas）：其 requirements.txt 钉的是 py3.7 时代版本，
@@ -281,12 +284,20 @@ else
   # imageio 钉 2.27.0：2.35+ 把 P 模式 GIF 统一解码成 RGB 3 通道，campaign 选关模板匹配
   # 时 cv2 通道断言直接崩（T2 真机崩溃根因）。
   log "使用 curated 依赖列表（flavor=alas）"
-  chroot_run uv pip install --python "$GUEST_PYTHON" -i "$PYPI_MIRROR" \
+  chroot_run uv venv "$GUEST_VENV" --python "$UV_PY_PATH"
+  chroot_run uv pip install --python "$GUEST_VENV/bin/python" -i "$PYPI_MIRROR" \
     'numpy>=2' scipy pillow lxml opencv-python-headless onnxruntime \
     pywebio uvicorn fastapi aiofiles inflection pyyaml requests tqdm rich \
     'imageio==2.27.0' 'pydantic<2' adbutils uiautomator2 uiautomator2cache \
     websockets pypresence onepush cached-property
 fi
+
+# 兼容上游对 .venv 的默认预期：软链 /opt/alas/.venv -> ../alas-venv。
+# 这一步是「venv 在源码树之外」的关键——上游源码热更新整目录替换 /opt/alas 时，
+# 依赖环境（/opt/alas-venv）不受影响，软链在新树里重建即可。
+chroot_run /bin/bash -c "ln -sfn ../alas-venv $GUEST_VENV_LINK"
+VENV_PY_VER="$(chroot_run "$GUEST_PYTHON" -c 'import platform; print(platform.python_version())' 2>/dev/null || echo '?')"
+log "venv python: $VENV_PY_VER（$GUEST_VENV，软链 $GUEST_VENV_LINK）"
 
 # ---------- 7. 应用本仓资产（宿主侧拷入 $ROOTFS_DIR/opt/alas） ----------
 # m0 补丁集：module/ 与 assets/ 子树整层覆盖上游同名文件
