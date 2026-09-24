@@ -103,7 +103,9 @@
 - 临时文件一律放 `.tmp/`（已 gitignore），不入系统临时目录。
 - 不做 git 提交 / push / 发版（用户决策，红线见「通用 Agent 约束」第六节）。
 - MaaFwApp fork 基线：`m0-archive/vendor/MaaFwApp` @ b2b0f54（阶段二复活做减法；归档只读）。
-- 本机工具链：系统 SDK/adb 在 `C:\Users\da270\AppData\Local\Android\Sdk`；便携工具链（JDK17/21、SDK 含 ndk/build-tools、gradle 缓存）在 `D:\VSCodeCache\shizku-m\build-env\`（**只读**复用，构建时 GRADLE_USER_HOME 等写目录指向本仓 `.tmp/`）。
+- **本机工具链：当前开发机上不存在（2026-09-24 实测）**。`app/local.properties` 不存在；本文档早先记载的 `C:\Users\da270\AppData\Local\Android\Sdk`（**用户不匹配**，本机用户是「长卿」）与便携工具链 `D:\VSCodeCache\shizku-m\build-env\`（JDK17/21、SDK、gradle 缓存）**均不存在** → **本机构不了 APK**。
+  → 因此 APK 打包已改走 CI：`rootfs.yml` 的 `apk` job（**手动触发**：Actions → rootfs → Run workflow → 勾 `build_apk`），装 CMake 3.22.1 + NDK 28.2，产出 `apk-debug` artifact。
+  → 若日后本机重新具备工具链，请把真实路径写回此处，并保留 CI 通道作为备用。
 - 真机调试闭环：设备 `AVAY025422002864`，adb shell 命令前必须 `export MSYS_NO_PATHCONV=1`；Windows 侧 adb/python 只吃 Windows 路径。
 - **真机调试纪律（2026-09-15 用户指令）**：禁止私自做锁屏/息屏测验；凡涉及改变屏幕状态的实验（锁屏、息屏、亮屏时长类）必须先经用户确认后再做。
 - **虚拟屏实验纪律（2026-09-15 手势劫持事件后立，不能再有第二次）**：凡创建虚拟屏的实验或代码：① **禁止** `FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS`（AOSP 语义：不设此 flag 的 VD 才不显示 home/导航栏/壁纸；设了 SystemUI 会在 VD 上建手势导航窗口，主屏手势即被劫持，事件详见 `debug.md` 同日条目）；② 实验前后各查一次手势窗口归属（`dumpsys window windows | grep -E 'GestureNav|GestureSilde|NavigationBar'` 必须在 display 0）；③ VD 属主进程必须可一键杀死；实验结束必须清场（杀属主 → `cmd display get-displays -i` 只剩 0）。

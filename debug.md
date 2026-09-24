@@ -4,6 +4,25 @@
 > **历史坑点（m0 阶段，全真机实证）见 `m0-archive/docs/debug.md` 与 `m0-archive/docs/devlog/`。** 高频索引：
 > WebView `vh` 塌缩（注入 innerHeight 修复）｜幻影进程查杀（`max_phantom_processes` / `settings_enable_monitor_phantom_procs`）｜mDNS `_adb-tls-connect` 端口过期但广播残留｜MaaFW PP-OCR 对 2D 单通道静默返空（堆叠 3ch）｜MaaFW 截图 BGR↔ALAS RGB 翻转｜RUN_COMMAND 权限只授清单声明方｜`am force-stop` 杀不掉 shell uid 残留（须显式 kill）｜桥 30s 无流量判死（10s 心跳）。
 
+## [2026-09-24] 换上游时「写死的 ALAS 假设」会静默把整个 rootfs 换成另一个项目
+
+- **现象**：换上游（ALAS → AzurPilot）后，设备端热更新一旦真的跑起来，会把 `/opt/alas` 整棵树 `git reset --hard` 成 **ALAS 源码**。运行环境被悄悄换成另一个项目，而症状是「更新后一堆怪错」——**几乎不可能联想到是热更新换掉了树**（我方桥接补丁也会随之全部失配）。
+- **根本原因**：`seeds/alasaos_update.sh` 的上游源**写死**为 ALAS 的镜像 `git://git.lyoko.io/AzurLaneAutoScript`；而打包时 `/opt/alas/.git` 已被删除 → 脚本 `git init` + `remote add` 这个 ALAS 源 → `fetch` → `reset --hard`。同理还有两处写死：`current` 只认 `BUILD_MANIFEST` 的旧字段名 `alas_commit`（M1 已改名 `upstream_commit`，导致 `current` 恒空、快路径失效「只表现为启动变慢」）；CDN pack 通道复刻的是 **ALAS 官方 `git_over_cdn` 协议**，换上游后没有对应 CDN。
+- **解决方案**：上游源**从 `BUILD_MANIFEST.upstream_repo` 派生**（构建期写入真实 URL），显式设 `ALASAOS_UPDATE_REPO` 仍可覆盖；CDN 通道 gate 在 `"$REPO" == *lyoko*`；commit 字段名新旧都认（`"(upstream|alas)_commit"`）。**教训：换上游时要全仓搜「写死的上游假设」——仓库地址、字段名、镜像协议、端口、目录名，一个都不能漏。**
+
+## [2026-09-24] 跨脚本复制代码片段要检查辅助函数命名空间（`hr: command not found`）
+
+- **现象**：`rootfs.yml` 构建第 4 步失败，日志只有一行 `build-rootfs.sh: line 523: hr: command not found`，退出码 127。
+- **根本原因**：新增的「运行时就绪冒烟」段是从 `spike/s1-deps/probe.sh` 复制过来的，带了探针脚本的输出辅助函数 `hr` / `say`；而 `build-rootfs.sh` 里只有 `log()`。**`bash -n` 语法检查发现不了这类问题**（函数调用在语法上完全合法）。
+- **解决方案**：改成 `log "..."`。**教训：跨脚本复制片段后，扫一遍用到的辅助函数（log/say/hr/die…）在本脚本里是否都有定义；`bash -n` 只能证明语法，不能证明可运行。**
+
+## [2026-09-24] 补丁文件必须 LF 行尾：Windows 上 `Path.write_text()` 会静默产出 CRLF
+
+- **现象**：本地 `git apply` 补丁时反复报 `patch does not apply`，但补丁正是从同一棵树 diff 出来的。
+- **根本原因**：**Windows 上 `pathlib.Path.write_text()` 默认把 `\n` 翻成 `os.linesep`（CRLF）**。而上游 `.gitattributes` 声明 `*.py eol=lf`，Linux 构建机的工作树是 LF → CRLF 补丁在 CI 上必然应用失败（本地因 `core.autocrlf=true` 反而看不出差异，白绕一圈）。
+- **解决方案**：生成时显式 `write_text(..., newline='\n')`，并在生成脚本里加 CRLF 自检；构建脚本也加 CRLF 拦截（fail-fast）。
+  **判行尾要用 Python 数 `b'\r\n'` 字节，别用 `grep -c $'\r'`** —— 后者在 Git Bash 下会误报（本次就因此把「本机工作树其实一直是 LF」误判成 CRLF，多绕了一圈）。
+
 ## [2026-09-24] `git push` 静默挂死零输出：PortableGit 默认把凭据助手选择器设为 `<no helper>`，且 GCM 必须在沙箱外才能访问 Windows 凭据存储
 
 - **现象**：`git push origin main` 长时间**无任何输出**（连报错都没有），`timeout` 到点被杀；`git-credential-manager diagnose` 同样零输出挂死。但 `git ls-remote`（GET）直连正常、`git credential fill` 返回空。误判方向：先后怀疑「没有推送权限」「github 被墙」「本机代理不通」。
