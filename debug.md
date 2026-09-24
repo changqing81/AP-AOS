@@ -4,6 +4,33 @@
 > **历史坑点（m0 阶段，全真机实证）见 `m0-archive/docs/debug.md` 与 `m0-archive/docs/devlog/`。** 高频索引：
 > WebView `vh` 塌缩（注入 innerHeight 修复）｜幻影进程查杀（`max_phantom_processes` / `settings_enable_monitor_phantom_procs`）｜mDNS `_adb-tls-connect` 端口过期但广播残留｜MaaFW PP-OCR 对 2D 单通道静默返空（堆叠 3ch）｜MaaFW 截图 BGR↔ALAS RGB 翻转｜RUN_COMMAND 权限只授清单声明方｜`am force-stop` 杀不掉 shell uid 残留（须显式 kill）｜桥 30s 无流量判死（10s 心跳）。
 
+## [2026-09-24] 体积裁剪删掉 `doc/`，上游 WebUI 启动即崩（StaticFiles 硬要求目录存在）
+
+- **现象**：真机装新包后 WebUI 起不来。启动器 `log/proot/session.log` 里 gui.py 反复秒退：
+  ```
+  AlasAos wrapper: gui.py started pid=6209
+  AlasAos wrapper: gui.py exited code=1 uptime=9s, respawn in 10s
+  ```
+  ALAS 侧 `log/2026-09-24_gui.txt` 里才是真因：
+  ```
+  RuntimeError: Directory '/opt/alas/doc' does not exist
+    at starlette/staticfiles.py:56 → StaticFiles.__init__
+  ```
+- **根本原因**：`build-rootfs.sh` 的体积裁剪 **`rm -rf "$root/doc"` 把目录整个删了**，
+  而上游 `module/webui` 启动时把三条路径挂成 StaticFiles：
+  `/static/assets`→`/opt/alas/assets`、`/static/doc`→`/opt/alas/doc`、
+  `/static/commission_rewards`→`/opt/alas/log/commission_rewards`。
+  **StaticFiles 遇到目录不存在是 raise RuntimeError（不是跳过）** → gui.py 秒退 → wrapper 无限重拉。
+- **解决方案**：内容照删、**目录本身保留** —— 在 `rm -rf ... "$root/doc" ...` 之后补
+  `mkdir -p "$root/doc" "$root/log/commission_rewards"`，体积代价约 0。
+- **教训**：**「这个目录没用」和「运行时可以不存在」是两回事**。裁剪上游目录之前，
+  必须确认它没有被 `StaticFiles` / `os.path.isdir` / `chdir` 之类的**存在性硬依赖**。
+  同类待复查：`webapp/`、`wallpapers/` 已被删（目前未暴露问题，但上游若也有挂载点就会重演）。
+- **定位手法（下次照做）**：WebUI 起不来时，先看 `session.log` 的退出码与重试节奏
+  （`exit code=1` + 固定 respawn 间隔 = 起来就崩，不是依赖没装好），
+  再去 ALAS 侧 `log/*_gui.txt` 找 Python traceback —— **真因几乎总在那份里**，
+  wrapper 的日志只有"退出了"。
+
 ## [2026-09-24] `.gitignore` 的通用目录名规则会静默屏蔽源码包：app 模块在干净 clone 上编译不过
 
 - **现象**：CI 报 `e: di/CoreModule.kt:8:29 Unresolved reference 'config'.`、
