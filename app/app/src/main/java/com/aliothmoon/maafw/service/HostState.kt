@@ -51,6 +51,9 @@ class HostState(
     private val envMutex = Mutex()
     private val pingSeq = AtomicInteger(0)
 
+    /** 桥探测连续失败计数（只被 probeMutex 保护的块读写） */
+    private var probeFailStreak = 0
+
     fun start() {
         scope.launch {
             servicePort.serviceState.collect { state ->
@@ -75,7 +78,17 @@ class HostState(
         val reachable = runCatching { pingBridge() }
             .onFailure { Timber.d("bridge probe failed: %s", it.message) }
             .getOrDefault(false)
-        _snapshot.update { it.copy(bridgeReachable = reachable) }
+        if (reachable) {
+            probeFailStreak = 0
+            _snapshot.update { it.copy(bridgeReachable = true) }
+        } else {
+            // 挂机满负荷（ALAS 每帧 2.7MB 打 screencap）时单次 ping 超时是常态，
+            // 连续 BRIDGE_FAIL_THRESHOLD 次失败才判不可达，与 FGS「桥抖动不撤保活」对齐
+            probeFailStreak++
+            if (probeFailStreak >= BRIDGE_FAIL_THRESHOLD) {
+                _snapshot.update { it.copy(bridgeReachable = false) }
+            }
+        }
         reachable
     }
 
@@ -199,6 +212,7 @@ class HostState(
         const val BRIDGE_HOST = "127.0.0.1"
         const val BRIDGE_PORT = 22300
         const val BRIDGE_PROBE_INTERVAL_MS = 4_000L
+        const val BRIDGE_FAIL_THRESHOLD = 2
         const val BRIDGE_CONNECT_TIMEOUT_MS = 1_500
         const val BRIDGE_READ_TIMEOUT_MS = 2_000
         const val CONNECT_WAIT_MS = 12_000L

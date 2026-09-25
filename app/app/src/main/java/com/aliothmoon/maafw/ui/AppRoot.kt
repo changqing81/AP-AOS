@@ -281,7 +281,9 @@ fun AppRoot(
                 // ALAS 页里是 WebView，网页自身的横滑手势（编辑器拖动等）会跟 pager 切页抢事件；
                 // 在 ALAS 页禁用用户横滑（切页走底部 tab），其他页保持原样
                 userScrollEnabled = TopDestination.entries[pagerState.currentPage] != TopDestination.Alas,
-                beyondViewportPageCount = 1,
+                // 三个 tab 全留 composition：=1 时挂机页切到设置页（相隔 2 页）整页销毁，
+                // 预览 SurfaceView 随之完整重建，切回要多黑屏一拍
+                beyondViewportPageCount = 2,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)

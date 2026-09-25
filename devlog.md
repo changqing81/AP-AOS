@@ -2,6 +2,17 @@
 
 > 倒序排列，最新在上；按发版版本号分段。
 
+### 2026-09-25 · 修复 🔧：切页不再闪「启动环境」/不再黑屏重载（采纳同源 fork 的 v0.1.5 修复）
+
+- **背景**：真机日志（2026-09-25 16:17）里 `app.log` 反复出现 `HostState: bridge probe failed: null`。对照 `wess09/AzurPilot-for-Android`（**同源 fork**，同包名 `com.aliothmoon.maafw`，已到 v0.1.5）的 `f90b7db`，确认是**同一个问题**，且其归因带真机实证（14/14 次切页「启动环境」出现次数归零）。
+- **归因**（其 devlog 原文）：切回挂机页时 `ensureEnvironmentStarted()` 末尾必发桥 ping，而挂机满负荷（ALAS 每帧 2.7MB 打 screencap）下**单次 ping 超时是常态** → `bridgeReachable=false` → `environmentUp=false` → 预览卡切进「启动环境」占位分支，把 SurfaceView 踢出 composition 销毁 → 等 ≤4s 周期探测翻回再重建一次，表现为闪「启动环境」+ 亚秒黑屏放大成秒级。关键对照实验：退回手机桌面再回来**不触发**（`active` 未变、无强制 ping），坐实是应用内自找的。
+- **A1 判据解耦**（`HangarScreen.kt`）：`VdPreview` 的 `envUp` 由 `snapshot.environmentUp`（含桥 ping）改为只看 `snapshot.vdDisplayId != DefaultDisplayConfig.DISPLAY_NONE`——预览**不走桥 TCP**，桥挂了画面照渲染；屏真没了（特权断线快照清零）才给「启动环境」。`HostSnapshot.environmentUp` 定义**不动**（悬浮球 / 屏保 / FGS 判据照旧）。
+- **A2 探测迟滞**（`HostState.kt`）：`probeBridgeNow()` 新增 `probeFailStreak` 计数 + `BRIDGE_FAIL_THRESHOLD = 2`，**连续 2 次失败才置 `bridgeReachable = false`**，与 `RunForegroundService`「桥抖动不撤保活」原则对齐。顺带治好悬浮球/屏保跟着瞬间探测抖动闪一下的问题。
+- **A3 pager 常驻**（`AppRoot.kt`）：`beyondViewportPageCount` 1→2，三个 tab（Hangar/Alas/Settings）全留 composition，从挂机页切到设置页（相隔 2 页）不再整页销毁、预览 SurfaceView 不再重建。
+- **移植依据**：三个文件路径、锚点、行号与本仓**完全一致**（同源 fork）；改动逐字照搬（含注释）。`DefaultDisplayConfig` 本仓 `HangarScreen.kt:52` 已有 import，无需补。
+- **静态校验**：括号增减与改动相符（`HostState` +4/+4 花括号、+3/+3 圆括号；另两文件仅字面量改动）；`environmentUp` 其余消费者（`OverlayController` / `OverlayPanel` / `ScreenSaverOverlayManager`）未受影响。
+- **编译验证走 CI**：本机无 Android 工具链（见 AGENTS.md 工程约定「本机工具链：当前开发机上不存在」），由 `rootfs` workflow 的 `apk` job 验证。
+
 ### 2026-09-21 · 发版 🚀：v0.1.4「日志中心重做」（用户授权 push + release）
 
 - **提交**：`70fc569 feat(logs): 设置页日志区重构——日志中心 + 双导出 + 自动清理 + v0.1.4 发版准备`（51 文件，+1599/-833）；tag `v0.1.4` 打在发版 commit 上（versionName 由 git describe 导出）。

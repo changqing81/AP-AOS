@@ -120,7 +120,9 @@ fun HangarScreen(
             verticalArrangement = Arrangement.spacedBy(MaaDesignTokens.Spacing.md),
         ) {
             VdPreview(
-                envUp = snapshot.environmentUp,
+                // 判据只看虚拟屏存在性：桥 ping 抖动不拆预览（预览不走桥 TCP，
+                // 桥挂了画面照渲染）；屏真没了（特权断线快照清零）才给「启动环境」
+                envUp = snapshot.vdDisplayId != DefaultDisplayConfig.DISPLAY_NONE,
                 onStartEnv = { scope.launch { hostState.ensureEnvironmentStarted() } },
                 content = previewContent,
                 onEnterFullscreen = onEnterFullscreen,
@@ -150,6 +152,10 @@ fun HangarScreen(
 
 /**
  * 虚拟屏画面卡：环境在跑显示实时预览，没跑给占位 + 一键拉起
+ *
+ * [envUp] 的判据是虚拟屏存在性（vdDisplayId），不含桥 ping——分支一切换
+ * content 就离开 composition、SurfaceView 整体销毁重建，桥探测抖动会把
+ * 亚秒级的重挂放大成秒级黑屏 + 「启动环境」闪现
  *
  * 内嵌画面只响应「单击进全屏」，不转发触摸（防误触）；
  * [content] 为 null 表示画面已搬去全屏宿主，显示占位
