@@ -47,10 +47,13 @@ if [ "$cur" = "$WANT" ]; then
   mark "imageio already $WANT"
 else
   mark "imageio ${cur:-missing} -> $WANT, pip install..."
-  # proot 下 pip 比原生慢一个量级，给 --timeout/--retries 快速失败而非死等
+  # proot 下 pip 比原生慢 5~10 倍（ptrace 拦截 + 首次要解依赖/下 wheel），
+  # 单次请求超时按 120s 给足；外层 ProotHost.ENV_FIX_TIMEOUT_MS 已是 300s。
+  # 原先的 --timeout 15 --retries 2 在慢网/无网下 40 余秒就放弃，
+  # 日志表现为「pip install failed（保留现状不阻塞启动）」——真机实测（2026-09-25）。
   # venv 内不需要 --break-system-packages
   "$PY" -m pip install -q --no-cache-dir \
-    --timeout 15 --retries 2 --disable-pip-version-check \
+    --timeout 120 --retries 3 --disable-pip-version-check \
     -i "$MIRROR" "imageio==$WANT" \
     || mark "WARN pip install failed（保留现状不阻塞启动）"
 fi

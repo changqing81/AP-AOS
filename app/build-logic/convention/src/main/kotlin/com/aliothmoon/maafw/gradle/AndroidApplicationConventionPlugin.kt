@@ -97,6 +97,29 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
                 }
             }
 
+            // Debug 也走**仓内固定**的 keystore。AGP 默认用 ~/.android/debug.keystore——
+            // 本地这份由 SDK 生成，CI runner 上每次都是**新生成**的（~/.android 不在缓存里），
+            // 于是每个 CI debug APK 的签名都不一样，互相覆盖安装直接报
+            // INSTALL_FAILED_UPDATE_INCOMPATIBLE（2026-09-25 真机实测：装新包必须先卸载）。
+            // 仓内 `app/app/debug.keystore` 是 Android 通用的公开调试密钥
+            // （androiddebugkey / android），提交它正是为了让所有构建产物签名一致。
+            // 路径与口令都可用环境变量/gradle 属性覆盖（DEBUG_KEYSTORE_PATH 等）。
+            val debugKeystore = file(
+                signingSetting("DEBUG_KEYSTORE_PATH", "DEBUG_KEYSTORE_PATH")
+                    .ifEmpty { "debug.keystore" },
+            )
+            if (debugKeystore.exists()) {
+                android.signingConfigs.maybeCreate("debug").apply {
+                    storeFile = debugKeystore
+                    storePassword = signingSetting("DEBUG_KEYSTORE_PASSWORD", "DEBUG_KEYSTORE_PASSWORD")
+                        .ifEmpty { "android" }
+                    keyAlias = signingSetting("DEBUG_KEY_ALIAS", "DEBUG_KEY_ALIAS")
+                        .ifEmpty { "androiddebugkey" }
+                    keyPassword = signingSetting("DEBUG_KEY_PASSWORD", "DEBUG_KEY_PASSWORD")
+                        .ifEmpty { "android" }
+                }
+            }
+
             extensions.configure<ApplicationAndroidComponentsExtension> {
                 onVariants { variant ->
                     // Set here rather than as an applicationIdSuffix on the build type: the

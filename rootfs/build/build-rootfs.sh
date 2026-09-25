@@ -274,6 +274,19 @@ if [[ "$UPSTREAM_FLAVOR" == "azurpilot" || "$UPSTREAM_FLAVOR" == "azurpilot-upst
     log "无 uv.lock（上游未入库）→ 用 uv sync 现场解析（不可复现，但装得上）"
     chroot_run /bin/bash -c "cd $GUEST_ALAS_ROOT && uv sync --no-dev --python $PYTHON_VERSION"
   fi
+
+  # imageio 覆盖上游钉版：pyproject 钉 2.26.0，但**该版本在 py3.14 下 import 失败**
+  # （真机 2026-09-25 实测：venv 内 `import imageio` 打不出来 → env_fix 每次启动都报
+  #  "imageio missing" 去补装，冷启动白等 30~45s）。而构建期的 import 硬门禁
+  # （见下方第 9 节）用的是 venv 解释器且是硬失败，却一直绿——两处结论矛盾，
+  # 以设备实测为准，这里直接升到 2.27.0。
+  # 选 2.27.0 而非更高的理由：2.35+ 把 P 模式 GIF 统一解成 RGB 3 通道，会让
+  # campaign 选关的 cv2.matchTemplate 通道断言崩（T2 崩溃根因，见 debug.md 2026-09-17）；
+  # 2.27.0 同时满足「避开该 bug」与「py3.14 可用」。
+  log "覆盖 imageio 为 2.27.0（上游钉 2.26.0 在 py3.14 下 import 失败）"
+  chroot_run uv pip install --python "$GUEST_VENV/bin/python" -i "$PYPI_MIRROR" \
+    'imageio==2.27.0' \
+    || { echo "::error::imageio 2.27.0 安装失败"; exit 1; }
 else
   # curated 依赖列表（flavor=alas）：其 requirements.txt 钉的是 py3.7 时代版本，
   # aarch64 + py3.14 上大面积死链（numpy 1.17.4 / scipy 1.4.1 / pillow 9.5.0 等），
