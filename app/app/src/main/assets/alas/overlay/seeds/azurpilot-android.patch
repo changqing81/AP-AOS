@@ -1,3 +1,60 @@
+diff --git a/gui.py b/gui.py
+index 04ef497..d5a27f8 100644
+--- a/gui.py
++++ b/gui.py
+@@ -833,6 +833,40 @@ def _prepare_dependency_sync_before_webui_start(
+     return True, service, request_queue, response_queue
+ 
+ 
++def _reapply_bridge_patch() -> None:
++    """AlasAos：桥接补丁自愈（幂等）。
++
++    桥接接线（azurpilot-android.patch）改的全是**上游跟踪文件**，任何
++    `git reset/pull` 都会打回原版 → 接线消失 → 截图/控制退回 ADB →
++    手机上连不上游戏，而症状是「连不上设备」，很难联想到补丁。
++
++    挂点选在「外层重启循环入口」而非 App 侧：GUI 开发者菜单的更新器走
++    `updater._trigger_reload()` → 只重启 WebUI **子进程**（本进程不退出），
++    App 侧 AlasUpdater 只在自己跑出 UPDATED 时重放，对它不知情。
++    挂这里可覆盖 GUI 内更新 / WebUI 崩溃重拉 / 首次启动三条路径。
++    脚本幂等，失败只记警告不阻塞 WebUI 启动。
++    """
++    base = os.path.dirname(os.path.abspath(__file__))
++    script = os.path.join(base, 'seeds', 'reapply_bridge_patch.sh')
++    if not os.path.isfile(script):
++        return
++    try:
++        r = subprocess.run(
++            ['/bin/bash', script], cwd=base,
++            capture_output=True, text=True, timeout=90,
++        )
++        verdict = next(
++            (ln.strip() for ln in reversed((r.stdout or '').splitlines()) if ln.strip()),
++            '',
++        )
++        if verdict.startswith('FAILED'):
++            logger.warning(f'[GUI] 桥接补丁重放失败：{verdict}')
++        elif verdict and verdict != 'ALREADY_APPLIED':
++            logger.info(f'[GUI] 桥接补丁自检：{verdict}')
++    except Exception as e:
++        logger.warning(f'[GUI] 桥接补丁自检异常：{e}')
++
++
+ def run_webui_supervisor() -> None:
+     """监督热重载 WebUI 子进程及其独立依赖同步服务。"""
+     should_exit = False
+@@ -847,6 +881,11 @@ def run_webui_supervisor() -> None:
+         return
+     try:
+         while not should_exit:
++            # AlasAos BEGIN: 桥接补丁自愈（幂等）。本循环每轮 = 一次 WebUI
++            # 子进程启动/重启；任何 git reset/pull 都会把补丁改过的上游跟踪
++            # 文件打回原版，故拉起 WebUI 前自检一次。
++            # 见 seeds/reapply_bridge_patch.sh 与 debug.md 同日条目。
++            _reapply_bridge_patch()
+             (
+                 ready_to_start,
+                 service,
 diff --git a/module/device/app_control.py b/module/device/app_control.py
 index 62d0166..07a1763 100644
 --- a/module/device/app_control.py

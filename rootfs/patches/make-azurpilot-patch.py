@@ -194,6 +194,65 @@ EDITS = [
      '        raise RuntimeError(f"无法验证 worker PID {pid}: {exc}") from exc',
      "        # [ALAS-AOS] 同上：无法确认时返回 None，让上层按「非存活」处理。\n"
      "        return None"),
+
+    # ---------------- gui.py（WebUI 热重载循环：补丁自愈挂点）----------------
+    # 任何 `git reset/pull`（App 侧 alasaos_update.sh / GUI 开发者菜单的更新器 /
+    # 手工 git）都会把 azurpilot-android.patch 改过的上游跟踪文件打回原版。
+    # App 侧 AlasUpdater 只在它自己跑出 UPDATED 时重放；**GUI 内更新它不知情**
+    # —— 那条路是 updater._trigger_reload() → State.restart_event.set() →
+    # gui.py 重启 WebUI **子进程**（gui.py 进程自己不退出，只 break 回外层循环）。
+    # 故把自检挂在「外层重启循环入口」，覆盖 GUI 内更新 / 崩溃重拉 / 首次启动。
+    ('gui.py',
+     "def run_webui_supervisor() -> None:\n",
+     "def _reapply_bridge_patch() -> None:\n"
+     '    """AlasAos：桥接补丁自愈（幂等）。\n'
+     "\n"
+     "    桥接接线（azurpilot-android.patch）改的全是**上游跟踪文件**，任何\n"
+     "    `git reset/pull` 都会打回原版 → 接线消失 → 截图/控制退回 ADB →\n"
+     "    手机上连不上游戏，而症状是「连不上设备」，很难联想到补丁。\n"
+     "\n"
+     "    挂点选在「外层重启循环入口」而非 App 侧：GUI 开发者菜单的更新器走\n"
+     "    `updater._trigger_reload()` → 只重启 WebUI **子进程**（本进程不退出），\n"
+     "    App 侧 AlasUpdater 只在自己跑出 UPDATED 时重放，对它不知情。\n"
+     "    挂这里可覆盖 GUI 内更新 / WebUI 崩溃重拉 / 首次启动三条路径。\n"
+     "    脚本幂等，失败只记警告不阻塞 WebUI 启动。\n"
+     '    """\n'
+     "    base = os.path.dirname(os.path.abspath(__file__))\n"
+     "    script = os.path.join(base, 'seeds', 'reapply_bridge_patch.sh')\n"
+     "    if not os.path.isfile(script):\n"
+     "        return\n"
+     "    try:\n"
+     "        r = subprocess.run(\n"
+     "            ['/bin/bash', script], cwd=base,\n"
+     "            capture_output=True, text=True, timeout=90,\n"
+     "        )\n"
+     "        verdict = next(\n"
+     "            (ln.strip() for ln in reversed((r.stdout or '').splitlines()) if ln.strip()),\n"
+     "            '',\n"
+     "        )\n"
+     "        if verdict.startswith('FAILED'):\n"
+     "            logger.warning(f'[GUI] 桥接补丁重放失败：{verdict}')\n"
+     "        elif verdict and verdict != 'ALREADY_APPLIED':\n"
+     "            logger.info(f'[GUI] 桥接补丁自检：{verdict}')\n"
+     "    except Exception as e:\n"
+     "        logger.warning(f'[GUI] 桥接补丁自检异常：{e}')\n"
+     "\n"
+     "\n"
+     "def run_webui_supervisor() -> None:\n"),
+    ('gui.py',
+     "    try:\n"
+     "        while not should_exit:\n"
+     "            (\n"
+     "                ready_to_start,\n",
+     "    try:\n"
+     "        while not should_exit:\n"
+     "            # AlasAos BEGIN: 桥接补丁自愈（幂等）。本循环每轮 = 一次 WebUI\n"
+     "            # 子进程启动/重启；任何 git reset/pull 都会把补丁改过的上游跟踪\n"
+     "            # 文件打回原版，故拉起 WebUI 前自检一次。\n"
+     "            # 见 seeds/reapply_bridge_patch.sh 与 debug.md 同日条目。\n"
+     "            _reapply_bridge_patch()\n"
+     "            (\n"
+     "                ready_to_start,\n"),
 ]
 
 # 追加到 alasaos.py 的岛屿摇杆方法（AzurPilot 的 island_swipe_hold 需要）
@@ -259,7 +318,8 @@ def main():
     print(f'[3] 接线插入 {n} 处，全部命中唯一锚点')
 
     # --- 4. 生成补丁 ---
-    r = subprocess.run(['git', '-C', str(tree), 'diff', '--', 'module/'],
+    # gui.py 在仓库根（不在 module/ 下）：桥接补丁自愈的挂点在那里，必须一并进补丁
+    r = subprocess.run(['git', '-C', str(tree), 'diff', '--', 'module/', 'gui.py'],
                        capture_output=True, text=True, encoding='utf-8')
     if r.returncode != 0:
         print('!! git diff 失败:', r.stderr)

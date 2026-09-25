@@ -31,6 +31,43 @@
 | **`screencap -d` 与 `input -d` 的 display id 是两个命名空间** | 本仓走桥（TCP 22300），不走 adb 通道 |
 | **Shizuku 未授权时直接 bind 只静默失败**，启动按钮必须走权限入口 | ⚠️ 本仓 `RootRemoteServiceConnector` 行为需核对 |
 
+## [2026-09-25] GUI 内热更新走的是另一条路：补丁不重放 → 桥静默失效
+
+**背景**：`azurpilot-android.patch` 改的全是**上游跟踪文件**，任何 `git reset/pull` 都会把它们
+打回原版。设备上有**三条** reset 来源：
+
+1. App 侧 `alasaos_update.sh`（启动时热更新）
+2. **GUI（WebUI）开发者菜单里的更新器** —— `module/webui/updater.py` 的 `_run_update()` 收尾同样 reset
+3. 手工 git 操作
+
+**为什么 2 是盲区**：App 侧 `AlasUpdater` 只在**它自己**跑出 UPDATED 时才重放补丁
+（`ProotHost.replayBridgePatch`）。而 GUI 内更新走的是
+`updater._trigger_reload()` → `State.restart_event.set()` → **gui.py 只重启 WebUI 子进程**
+（`break` 回外层循环，gui.py 进程本身**不退出**）——App 侧完全不知情，
+于是补丁不重放、桥静默失效，症状是「连不上设备」，很难联想到补丁。
+
+**定位时差点搞错的一步**：一开始以为 hook 该挂在 wrapper 的 `_start_gui_once`（每次拉 gui.py 前，
+改动更小）。读 `gui.py:930-970` 才发现 GUI 内更新**不重启 gui.py 进程**，wrapper 的
+`proc.wait()` 根本不返回 —— **挂 wrapper 覆盖不到这个场景**。
+
+**解决**：补丁新增第 7 个文件 `gui.py`，在 `run_webui_supervisor()` 的**外层重启循环入口**
+（`while not should_exit:` 之后、`_prepare_dependency_sync_before_webui_start()` 之前）
+调 `_reapply_bridge_patch()`；配套新增 `seeds/reapply_bridge_patch.sh`（幂等四态）：
+
+| 判据 | 含义 | 动作 |
+|---|---|---|
+| `apply --check` 能过 | 补丁不在位 | `apply` |
+| `apply --reverse --check` 能过 | 补丁已在位 | 跳过（`ALREADY_APPLIED`） |
+| 都不行 | 上游漂移 | 试 `--3way` |
+
+挂点选在**循环入口**而非"启动前一次"，正好覆盖三条路径：**GUI 内更新 / WebUI 崩溃重拉 / App 首次启动**。
+
+**顺带修掉的工具链坑**：
+- `git -C <tree> apply <相对路径>`：`-C` 会改工作目录，**补丁路径必须写绝对路径**，否则
+  `error: can't open patch`（而且退出码看着像成功，别被骗）
+- 经 bash heredoc 把**中文**传给 Python 有编码风险 —— 实测出现锚点匹配 `count=0` 的**假阴性**。
+  对策：写脚本文件（UTF-8）再跑；或让生成器里的**锚点只用纯 ASCII**（新内容里可以有中文）
+
 ## [2026-09-25] 桥接短路放晚了一层：`ConnectionAttr` 先动 adb → 每次冷启动白等 123 秒，首次直接崩
 
 **现象**（真机 2026-09-25 16:17 日志）：装好包点进 App「**黑屏、一点反应都没有**」，**等约 2 分钟才进得去**。
