@@ -4,6 +4,33 @@
 > **历史坑点（m0 阶段，全真机实证）见 `m0-archive/docs/debug.md` 与 `m0-archive/docs/devlog/`。** 高频索引：
 > WebView `vh` 塌缩（注入 innerHeight 修复）｜幻影进程查杀（`max_phantom_processes` / `settings_enable_monitor_phantom_procs`）｜mDNS `_adb-tls-connect` 端口过期但广播残留｜MaaFW PP-OCR 对 2D 单通道静默返空（堆叠 3ch）｜MaaFW 截图 BGR↔ALAS RGB 翻转｜RUN_COMMAND 权限只授清单声明方｜`am force-stop` 杀不掉 shell uid 残留（须显式 kill）｜桥 30s 无流量判死（10s 心跳）。
 
+## 📌 来自 `wess09/AzurPilot-for-Android` 的坑点速查（同源平行分支，2026-09-25 核查）
+
+> 该仓库与本仓**同源**（描述即「AzurPilot 安卓版本 基于ALAS-AOS」），提交者 `Elysia` 与本仓历史提交
+> `fd09337`（M4-d）**同一人**，即原 AP-AOS 开发者；进度已到 v0.1.5，比本仓更靠前。
+> **但架构不同**：它走 `module/api/`（FastAPI + React）+ `rootfs/overlays/`，
+> 本仓走 pywebio `module/webui/` + `rootfs/patches/`。**坑点可借鉴，方案不可照搬。**
+> 他的 `debug.md` 共 35 条，以下是与**本仓直接相关**的部分（已采纳为代码的三条见 commit `3277fd0`）。
+>
+> 他的一句话值得长期记住：**「pip 依赖必须与上游 requirements.txt 逐条对齐钉版，『装最新』就是埋雷」**。
+
+| 坑 | 本仓状态 |
+|---|---|
+| **AGP 默认 debug keystore 每次构建现生成** → 每个 CI debug APK 签名都不同，互相覆盖安装报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | ✅ **已修**：入库 `app/app/debug.keystore`（Android 通用公开调试密钥）+ 约定插件让 debug signingConfig 指向它 |
+| **proot 下 pip 比原生慢 5~10 倍**（ptrace 拦截），一次性执行超时预算要足 | ✅ **已修**：`env_fix.sh` 由 `--timeout 15 --retries 2` 改为 `--timeout 120 --retries 3` |
+| **imageio 必须构建期钉版**：2.35+ 把 P 模式 GIF 解成 RGB 3 通道 → campaign 选关 `cv2.matchTemplate` 通道断言崩 | ✅ **已修**：构建期显式覆盖 `imageio==2.27.0`（上游 pyproject 的 2.26.0 在 py3.14 下 import 失败） |
+| **seed 把「模块名」当「实例名」**：`filepath_config(..., mod_name=)` 的 `mod_name` 是模块名（默认 `'alas'`），实例名是另一个常量（`DEFAULT_CONFIG_NAME = 'ap'`） | ✅ **已核实本仓没中招**：播种 `config/alas.json` 与上游 daemon 自用名（`AzurLaneDaemon('alas', ...)`）一致，真机日志 `config_name = 'alas'` 印证 |
+| **裸调 `/api/*` 缺 `instance`/`config` 参数 → 必然 400 或落空**（上游 `instance()` 回落到 `DEFAULT_CONFIG_NAME='ap'`） | ⚠️ **潜在风险**：本仓 `module/webui/api.py:101/111/568` 同样有该回落；我们用 WebView 加载 WebUI 页面（非直接调 API），风险有限。**若某功能"点了没反应"，先查这里** |
+| **Android 删掉 `.git` 后不能复用 WebUI 的 Git 更新器**（`fatal: not a git repository`） | ⚠️ **待验证**：本仓 `alasaos_update.sh` 走 `git init` + `remote add` + fetch；他改成「App 侧整包下载/校验/切换」 |
+| **`.prettierrc.mjs` 是 fork 继承来的死配置**（本仓无 `package.json`，依赖装不上） | ⚠️ 可顺手清：本仓 `.prettierignore` 仍列着 maa 时代条目（`.create-maa-project`、`resource/base/model/ocr/`、`tools/schema`） |
+| **`gradlew ... \| tail` 会把构建失败伪装成成功**（管道退出码取最后一个命令） | ✅ 本仓已踩过同款（`uv sync \| tail -25` 把失败吞成 exit=0），教训已记 |
+| **material3 1.4.0 的 `MotionScheme` 是 internal**（`MaterialTheme.motionScheme` 取不到） | ⚠️ 编译期才会遇到；判据：看 javap 名字里有没有 `$<模块名>` 后缀 |
+| **`release` 包排障双盲区**：Timber 只落 W+ 且无 logcat plant；wrapper `/logs` 只服务 mtime 最新的一个 txt | ⚠️ 与本仓 `FileLogTree` 行为需核对 |
+| **wrapper `/status` 时间戳是 guest 本地时**（proot 无 `TZ=UTC`）→ 比设备 CST 慢 8h，别误判"旧会话复活" | ⚠️ 排查时注意 |
+| **busybox tar 解 ubuntu-base 必炸**（硬链接前向引用 + app uid 不能 mknod） | ✅ 本仓用 Java 流式解 tar/xz（`commons-compress` + `tukaani-xz`），已绕开 |
+| **`screencap -d` 与 `input -d` 的 display id 是两个命名空间** | 本仓走桥（TCP 22300），不走 adb 通道 |
+| **Shizuku 未授权时直接 bind 只静默失败**，启动按钮必须走权限入口 | ⚠️ 本仓 `RootRemoteServiceConnector` 行为需核对 |
+
 ## [2026-09-25] Android 下 `/proc` 不可读 → 上游 worker_registry 的 psutil 自查失败，WebUI 反复自退
 
 - **现象**：装新包后 WebUI 起不来，但**退出码是 0**（不是崩溃）：
