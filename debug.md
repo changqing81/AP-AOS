@@ -22,9 +22,13 @@
   **注意**：proot 已经绑了 `/proc`（`ProotHost.kt` 的 `-b /proc:/proc`），所以这不是绑定问题，
   是**内核硬限制** —— 从 proot 内部解决不了，只能让上游代码降级。
 - **解决方案**（`rootfs/patches/azurpilot-android.patch` 追加 2 处最小 diff）：
-  1. `_process_created_at()`：psutil 失败且 `pid == os.getpid()` 时改用 `time.time()` 近似
-     （首次调用后经 `_self_created_at` 缓存 → 进程存活期内**恒定**，足以支撑重复初始化判定）；
-     其它 pid 维持原 `raise`。
+  1. `_process_created_at()`：psutil 失败时**一律**降级为 `time.time()` 近似
+     （本进程**与它拉起的 worker 进程**都读不到 `/proc` —— 后者是 `register_worker()`
+     给 worker 打时间戳时要用的）。本进程经 `_self_created_at` 缓存 → 进程存活期内**恒定**，
+     足以支撑 `claim_owner` 的重复初始化判定。
+     > ⚠️ 初版补丁只放行了 `pid == os.getpid()`。装上后状态机能走到 **`RUNNING`**（WebUI 真起来了），
+     > 但**点「启动挂机」时** `register_worker()` 给 worker 进程（pid ≠ 本进程）打时间戳
+     > 仍 `raise` —— 2026-09-25 11:55 真机日志实证。**放行范围要覆盖 worker**。
   2. `process_matches()`：末尾的 `raise RuntimeError` 改为 `return None`（无法确认），
      让 `_record_is_alive()` 判为「非存活」，从而允许启动。
   **代价**：丧失 PID 复用检测 —— Android 上 WebUI 实例由 App 单点控制，风险可接受。

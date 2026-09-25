@@ -175,33 +175,27 @@ index 9e1d8de..d365448 100644
              'ADB_nc': self.screenshot_adb_nc,
              'uiautomator2': self.screenshot_uiautomator2,
 diff --git a/module/webui/worker_registry.py b/module/webui/worker_registry.py
-index e802a3d..21ddf49 100644
+index e802a3d..c8b11cc 100644
 --- a/module/webui/worker_registry.py
 +++ b/module/webui/worker_registry.py
-@@ -305,7 +305,14 @@ def _process_created_at(pid: int) -> float:
+@@ -305,7 +305,12 @@ def _process_created_at(pid: int) -> float:
  
          created_at = psutil.Process(pid).create_time()
      except Exception as exc:
 -        raise RuntimeError(f"无法读取 worker PID {pid} 的创建时间: {exc}") from exc
 +        # [ALAS-AOS] Android/proot：psutil 需要读 /proc，而 app 进程读 /proc/stat 与
-+        # /proc/<pid>/stat 被内核拒绝（实测 PermissionError: '/proc/stat'），取不到
-+        # 进程创建时间。对本进程改用「首次调用时刻」近似——进程存活期内经
-+        # _self_created_at 缓存后恒定不变，足以支撑 claim_owner 的重复初始化判定；
-+        # 其它 pid 仍按「无法验证」处理，交给调用方决定。
-+        if pid != os.getpid():
-+            raise RuntimeError(f"无法读取 worker PID {pid} 的创建时间: {exc}") from exc
++        # /proc/<pid>/stat 被内核拒绝（实测 PermissionError: '/proc/stat'）。
++        # 本进程与它拉起的 worker 进程都读不到 → 一律降级为「登记时刻」近似；
++        # 配套 process_matches() 在同类失败下返回 None（无法确认），上层按「非存活」处理。
++        # 代价：Android 上 worker 存活探测失效（孤儿回收不可用），但不阻塞启动与挂机。
 +        created_at = time.time()
      if pid == os.getpid():
          _self_created_at = created_at
      return created_at
-@@ -553,4 +560,9 @@ def process_matches(record: dict) -> bool | None:
+@@ -553,4 +558,5 @@ def process_matches(record: dict) -> bool | None:
                  return None
          except ImportError:
              pass
 -        raise RuntimeError(f"无法验证 worker PID {pid}: {exc}") from exc
-+        # [ALAS-AOS] Android/proot：/proc/<pid> 存在但 stat 读不了（权限拒绝），
-+        # psutil 无法比对创建时间。原先在此 raise → _record_is_alive 保守返回 True
-+        # → claim_owner 误判「旧 WebUI 仍在运行」而拒绝启动（真机实测 exit code=0
-+        # 反复重启）。改为返回 None（无法确认），上层按「非存活」处理，从而允许启动。
-+        # 代价：丧失 PID 复用检测——Android 上 WebUI 实例由 App 单点控制，风险可接受。
++        # [ALAS-AOS] 同上：无法确认时返回 None，让上层按「非存活」处理。
 +        return None
