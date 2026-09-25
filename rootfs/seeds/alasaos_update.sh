@@ -47,7 +47,14 @@ FAIL_FILE="$ALAS_DIR/.alasaos_update_fail_date"
 # 极难归因（补丁也会随之全部失配）。
 MANIFEST="$ALAS_DIR/BUILD_MANIFEST"
 if [[ -z "${ALASAOS_UPDATE_REPO:-}" && -f "$MANIFEST" ]]; then
-  _repo="$(grep -o '"upstream_repo": *"[^"]*"' "$MANIFEST" | head -1 | sed 's/.*: *"//; s/"$//')"
+  # 优先 update_repo（**设备侧国内镜像**），缺失才回落 upstream_repo（烘焙源）。
+  # 两个字段分开是为了「烘焙走海外、设备走国内」：设备直连 GitHub 会 443 超时
+  # （真机实证 Couldn't connect after 31445ms），且镜像通常落后一点，
+  # 正好让设备停在已适配的版本上。
+  _repo="$(grep -o '"update_repo": *"[^"]*"' "$MANIFEST" | head -1 | sed 's/.*: *"//; s/"$//')"
+  if [[ -z "$_repo" ]]; then
+    _repo="$(grep -o '"upstream_repo": *"[^"]*"' "$MANIFEST" | head -1 | sed 's/.*: *"//; s/"$//')"
+  fi
   if [[ -n "$_repo" ]]; then
     ALASAOS_UPDATE_REPO="$_repo"
     echo "[update] 上游源取自 BUILD_MANIFEST: $_repo"

@@ -599,6 +599,14 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # 桥接接线靠**运行时注入**（不再给上游打补丁）：把 ALAS 根目录挂上 PYTHONPATH，
+    # 使 <root>/sitecustomize.py 被每个 Python 子进程自动 import —— 本进程之后
+    # spawn 的 runner / gui / 工具任务都继承该环境变量。
+    # 幂等：已包含则不动（App 侧若自己设了 PYTHONPATH 也保留）。
+    _existing = os.environ.get('PYTHONPATH', '')
+    if BASE_DIR not in _existing.split(os.pathsep):
+        os.environ['PYTHONPATH'] = \
+            f'{BASE_DIR}{os.pathsep}{_existing}' if _existing else BASE_DIR
     _lock_fd = _acquire_instance_lock()  # noqa: F841 - 引用防 GC
     atexit.register(_cleanup)
     signal.signal(signal.SIGTERM, _on_signal)

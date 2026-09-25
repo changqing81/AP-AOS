@@ -73,6 +73,10 @@ case "$UPSTREAM_FLAVOR" in
 esac
 # 旧变量名向后兼容：ALAS_REPO/ALAS_REF 若非空则覆盖
 UPSTREAM_REPO="${UPSTREAM_REPO:-${ALAS_REPO:-$_default_repo}}"
+# 设备侧**运行时热更新源**：与烘焙源刻意分开 —— 烘焙由 CI 在海外跑（直连 GitHub 最快），
+# 设备在大陆直连 GitHub 会 443 超时（真机实证 Couldn't connect after 31445ms），
+# 故指向国内镜像。BUILD_MANIFEST.update_repo 记录它，alasaos_update.sh 优先采用。
+UPDATE_REPO="${UPDATE_REPO:-https://gitcode.com/gcw_BYvq9jGu/AzurPilot.git}"
 UPSTREAM_REF="${UPSTREAM_REF:-${ALAS_REF:-$_default_ref}}"
 # 注：GHA runner 在海外，GitHub 原生最快；gitee 同名镜像对匿名克隆要凭证（401），勿用。
 # 国内本地复现构建时可 export UPSTREAM_REPO=<可达镜像>；runtime 更新镜像由 deploy.yaml 管。
@@ -337,23 +341,20 @@ else
   # 而不是像整文件覆盖那样静默回退上游实现（见 §1.3 / §4.1）。
   # 补丁由 rootfs/patches/make-azurpilot-patch.py 生成；**必须是 LF 行尾**：上游 .gitattributes
   # 声明 *.py eol=lf，而 Windows 上 Path.write_text() 默认产出 CRLF，会必然失败（已实测）。
-  PATCH="$ASSETS/patches/azurpilot-android.patch"
-  if [[ ! -f "$PATCH" ]]; then
-    echo "::error::缺少桥接补丁: $PATCH（用 rootfs/patches/make-azurpilot-patch.py 生成）"
-    exit 1
-  fi
-  if grep -q $'\r' "$PATCH"; then
-    echo "::error::桥接补丁含 CRLF 行尾，Linux 构建机上必然应用失败: $PATCH"
-    exit 1
-  fi
-  # 宿主侧 git apply：补丁在仓内、不在 chroot 里；树属 root，需 safe.directory
-  log "应用桥接补丁（最小 diff）: $(basename "$PATCH")"
-  git -c safe.directory='*' -C "$ROOTFS_DIR$GUEST_ALAS_ROOT" apply --verbose "$PATCH" \
-    || { echo "::error::桥接补丁应用失败——上游源码已漂移，请用 rootfs/patches/make-azurpilot-patch.py 重新生成"; exit 1; }
-  # 新增文件：桥客户端本身（补丁只管已跟踪文件的插入）
+  # ★ 2026-09-25 起：桥接接线改为**运行时注入**，不再给上游打补丁。
+  #   动因（debug.md 同日条目）：patch 改的都是上游跟踪文件，上游一提交就失效、
+  #   每次都要重打；更糟的是失败是**静默**的 —— GUI 更新器把代码拉到新 commit 后
+  #   补丁没被重放，上游原版 worker_registry 读 /proc 抛错，gui.py 秒退 code=1 无限重拉。
+  #   现在上游源码**一个字节都不改**：接线由 alasaos_bootstrap.py 在模块 import 时注入，
+  #   sitecustomize.py 是它的自动入口（wrapper.py 负责把 /opt/alas 挂上 PYTHONPATH）。
   install -D -m 0644 "$ASSETS/patches/module/device/method/alasaos.py" \
     "$ROOTFS_DIR/opt/alas/module/device/method/alasaos.py"
-  log "azurpilot：桥接补丁已应用 + alasaos.py 已装（纯新增）"
+  install -D -m 0644 "$ASSETS/seeds/alasaos_bootstrap.py" \
+    "$ROOTFS_DIR/opt/alas/alasaos_bootstrap.py"
+  install -D -m 0644 "$ASSETS/seeds/sitecustomize.py" \
+    "$ROOTFS_DIR/opt/alas/sitecustomize.py"
+  log "azurpilot：桥客户端 + 运行时注入已装（alasaos.py / alasaos_bootstrap.py / sitecustomize.py）"
+  log "azurpilot：上游源码零改动 —— 不再需要补丁，也不再需要补丁重放"
   log "azurpilot：assets_fix.py 未重放（其 FIXES 表针对 ALAS 资产，上游素材版本不同）"
 fi
 
@@ -603,7 +604,7 @@ UPSTREAM_FLAVOR="$UPSTREAM_FLAVOR" UPSTREAM_REPO="$UPSTREAM_REPO" PINNED_COMMIT=
 REPO_COMMIT="$REPO_COMMIT" GUEST_PYTHON="$GUEST_PYTHON" VENV_PY_VER="$VENV_PY_VER" \
 DISTRO_PY="$DISTRO_PY" UV_VER="$UV_VER" TRIM_LEVEL="$TRIM_LEVEL" TRIM_SAVED_MB="$TRIM_SAVED_MB" \
 DET_SHA="$DET_SHA" REC_SHA="$REC_SHA" KEYS_SHA="$KEYS_SHA" \
-ORT_VER="$ORT_VER" CV_VER="$CV_VER" \
+ORT_VER="$ORT_VER" CV_VER="$CV_VER" UPDATE_REPO="$UPDATE_REPO" \
 python3 - <<'PY' > "$ROOTFS_DIR/opt/alas/BUILD_MANIFEST"
 import json
 import os
@@ -617,6 +618,8 @@ manifest = {
     "upstream_flavor": e["UPSTREAM_FLAVOR"],
     "upstream_repo": e["UPSTREAM_REPO"],
     "upstream_commit": e["PINNED_COMMIT"],
+    # 设备侧热更新源（国内镜像；alasaos_update.sh 优先读它，缺失才回落 upstream_repo）
+    "update_repo": e.get("UPDATE_REPO", ""),
     # guest 侧 Python（App 侧 ProotHost.GUEST_PYTHON 必须与此一致）
     "guest_python": e["GUEST_PYTHON"],
     "python_version": e["VENV_PY_VER"],

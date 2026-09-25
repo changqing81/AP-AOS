@@ -31,6 +31,41 @@
 | **`screencap -d` 与 `input -d` 的 display id 是两个命名空间** | 本仓走桥（TCP 22300），不走 adb 通道 |
 | **Shizuku 未授权时直接 bind 只静默失败**，启动按钮必须走权限入口 | ⚠️ 本仓 `RootRemoteServiceConnector` 行为需核对 |
 
+## [2026-09-25] 批量 `git rm` 放前台被超时打断 → 192 个文件变「工作树已删」
+
+**现象**：一条含「批量 `git rm` + 慢速全仓 grep」的**前台**命令被超时 SIGTERM 打断后，
+`git status` 冒出 **192 个 ` D`（未暂存的工作树删除）** —— 含 `overlay/wrapper.py`、
+整个 `app/.../maafw/**` 源码树、`patches/module/**`。同时 `.git/index.lock` 残留，
+之后任何 `git checkout` 都报 `fatal: Unable to create '.git/index.lock': File exists`。
+
+**链条**：
+1. 前台命令超时被杀 → 中断的 git 操作留下 `index.lock` + 索引/工作树不一致
+2. 第一次恢复用「循环 189 次 `git checkout -- "$f"`」→ **再次超时**
+   （每个文件启一个 git 进程，上百个必然超时），且被残留锁挡住
+3. 最终修复见下
+
+**修复**：
+```bash
+# ① 先确认没有**活跃**的 git 进程（本次那个 git.exe 只有 32K WS，是明显僵死残留）
+Get-Process git | Select-Object Id, WorkingSet64
+# ② 删残留锁
+rm -f .git/index.lock
+# ③ 一次性恢复：**必须 1 次 git 调用**，不要循环
+git status --short | grep '^ D' | awk '{print $2}' > .tmp/restore.txt
+tr '\n' '\0' < .tmp/restore.txt | xargs -0 git checkout --
+```
+
+**教训**：
+- **批量 git 写操作绝不放在会被前台超时打断的命令里** —— 拆成多次小命令，
+  或直接 `run_in_background` 并等通知。
+- **恢复要「1 次 git 调用」**：`xargs -0 git checkout --` 一把梭；循环逐文件必超时。
+- **`.git/index.lock` 先查活跃进程再删**，别盲删（盲删可能撞上正在跑的 git）。
+- **判断「谁删的」看状态位**：`D `（已暂存，通常是 `git rm` 干的）vs
+  ` D`（工作树删除、索引未动）。本次事故里 192 个全是后者、只有 1 个前者，
+  这就是「不是 `git rm` 直接删的、而是中断导致不一致」的证据。
+- 这棵树随时可能被别的操作影响（同 `D:\alas\AzurPilot` 的多会话教训）：
+  **写操作要「立即完成、立即验证」**，别让半成品状态挂在那里。
+
 ## [2026-09-25] GUI 内热更新走的是另一条路：补丁不重放 → 桥静默失效
 
 **背景**：`azurpilot-android.patch` 改的全是**上游跟踪文件**，任何 `git reset/pull` 都会把它们

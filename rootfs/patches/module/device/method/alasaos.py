@@ -190,6 +190,19 @@ class AlasAos:
         logger.attr('App current (alasaos)', current)
         return current
 
+    def island_swipe_hold_alasaos(self, p1, p2, hold_time):
+        """岛屿摇杆：两点间滑动 + 终点保持。
+
+        AzurPilot 的 island_swipe_hold 传入的是**毫秒**（minitouch 的
+        CommandBuilder.wait 语义）。桥只有 swipe(duration 秒) 一个原语，
+        故用「滑动时长 = 保持时长」近似终点保持；下限 0.1s 避免退化成点击。
+
+        注：本方法原先由补丁生成器在构建期动态插入，改用运行时注入后直接
+        落在本文件里（少一层动态改写，也让注入侧能按同一签名调用）。
+        """
+        duration = max(0.1, int(hold_time) / 1000.0)
+        self.swipe_alasaos(p1, p2, duration=duration)
+
     def get_orientation(self):
         """桥接模式下虚拟屏始终横屏 1280x720，直接返回 0。
         注意：本方法在 AlasAos 混入类上，MRO 先于 Connection 的 adb 实现。"""
