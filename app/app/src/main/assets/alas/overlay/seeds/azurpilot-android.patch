@@ -78,6 +78,58 @@ index afde4f6..d79788f 100644
          if not self.is_over_http:
              self.detect_device()
  
+diff --git a/module/device/connection_attr.py b/module/device/connection_attr.py
+index 6262a6e..0f3e91f 100644
+--- a/module/device/connection_attr.py
++++ b/module/device/connection_attr.py
+@@ -123,10 +123,20 @@ class ConnectionAttr:
+ 
+         logger.attr('是否云手机', IS_ON_PHONE_CLOUD)
+ 
+-        # Init adb client
+-        logger.attr('ADB路径', self.adb_binary)
+-        # Monkey patch to custom adb
+-        adbutils.adb_path = lambda: self.adb_binary
++        # AlasAos BEGIN: 桥接模式（serial 以 alasaos 开头）没有本地 adb 二进制。
++        # 必须在此短路：下面的 self.adb_binary 会走「自动下载 platform-tools」分支，
++        # 而 Android 上 dl.google.com 不可达 → 解压报 BadZipFile 并直接中断设备初始化
++        # （真机实测 16:14:00 触发下载、16:16:03 抛错，白等 123 秒后设备初始化失败）。
++        # 注：Connection.__init__ 里的桥接判断在 super().__init__() 之后，拦不住这里。
++        alasaos_bridge = str(self.config.Emulator_Serial).strip().startswith('alasaos')
++        if alasaos_bridge:
++            logger.attr('ADB路径', '(alasaos 桥接：无需本地 adb)')
++        else:
++            # Init adb client
++            logger.attr('ADB路径', self.adb_binary)
++            # Monkey patch to custom adb
++            adbutils.adb_path = lambda: self.adb_binary
++        # AlasAos END
+         # Remove global proxies, or uiautomator2 will go through it
+         d = dict(**os.environ)
+         d.update(self.config.args)
+@@ -134,7 +144,10 @@ class ConnectionAttr:
+             if 'proxy' in k[0].split('_')[-1].lower():
+                 del os.environ[k[0]]
+         # Cache adb_client
+-        _ = self.adb_client
++        # AlasAos BEGIN: 桥接模式不建 adb 客户端（AdbClient 会去探 adb server）
++        if not alasaos_bridge:
++            _ = self.adb_client
++        # AlasAos END
+ 
+         # Parse custom serial
+         self.serial = str(self.config.Emulator_Serial)
+@@ -386,6 +399,10 @@ class ConnectionAttr:
+         Returns:
+             str: ADB 可执行文件的绝对路径。
+         """
++        # AlasAos BEGIN: 桥接模式即便本属性被访问也不做探测/下载（幂等防护）
++        if str(self.config.Emulator_Serial).strip().startswith('alasaos'):
++            return ''
++        # AlasAos END
+         from module.webui.setting import State
+ 
+         # 统一使用绝对路径检查，避免相对路径导致的 CWD 问题
 diff --git a/module/device/control.py b/module/device/control.py
 index a78d682..acb8abc 100644
 --- a/module/device/control.py

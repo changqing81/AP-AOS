@@ -31,6 +31,56 @@
 | **`screencap -d` 与 `input -d` 的 display id 是两个命名空间** | 本仓走桥（TCP 22300），不走 adb 通道 |
 | **Shizuku 未授权时直接 bind 只静默失败**，启动按钮必须走权限入口 | ⚠️ 本仓 `RootRemoteServiceConnector` 行为需核对 |
 
+## [2026-09-25] 桥接短路放晚了一层：`ConnectionAttr` 先动 adb → 每次冷启动白等 123 秒，首次直接崩
+
+**现象**（真机 2026-09-25 16:17 日志）：装好包点进 App「**黑屏、一点反应都没有**」，**等约 2 分钟才进得去**。
+`log/proot/session.log` 看着一切正常（环境 `RUNNING`、WebUI 已起），真因只在 ALAS 侧日志里：
+
+```
+16:14:00.717 | WARNING  | [设备] 未找到 ADB，正在下载 Android platform-tools:
+                          https://dl.google.com/android/repository/platform-tools-latest-linux.zip
+16:16:03.482 | CRITICAL | [错误] 设备初始化失败
+异常：BadZipFile: Bad magic number for file header
+       targetpath = '/opt/alas-venv/bin/platform-tools/NOTICE.txt'
+```
+
+**根本原因**：`serial=alasaos` 的短路判断**放晚了一层**。MRO 调用链是
+
+```
+Device.__init__ → Screenshot.__init__ → PlatformBase.__init__ → Connection.__init__ → ConnectionAttr.__init__
+```
+
+而 `Connection.__init__` 里的桥接短路（`if str(self.serial).startswith('alasaos')`）写在
+`super().__init__(config)` **之后** —— 那时 `ConnectionAttr.__init__` 早已执行完
+`logger.attr('ADB路径', self.adb_binary)`。`adb_binary` 是 `cached_property`，找不到 adb 就
+**自动下载 platform-tools**：Android 上 `dl.google.com` 不可达 → `urllib` 拿回残包 →
+`zipfile` 解到一半 `BadZipFile` → 异常冒泡到 `alas.py:313` → **设备初始化失败**。
+（它不属于 `EmulatorNotRunningError`，所以 `device.py` 的 `for trial in range(4)` 重试**根本不生效**。）
+
+**为什么「等一会能进去」**：`adb_binary` 的探测顺序是「deploy 配置 → 候选路径 → Python 环境 →
+系统 PATH → 自动下载」，**下载失败不是终局**（下次可能拿到完整包），于是走完
+`ConnectionAttr.__init__` → 回到 `Connection.__init__` 的短路 → 正常。
+换句话说：**每次冷启动都要陪跑这段下载，成功与否看运气**。
+
+**解决**（`rootfs/patches/azurpilot-android.patch` 的 `connection_attr.py`，3 处最小 diff）：
+1. `__init__` 里把 `self.adb_binary` + `adbutils.adb_path` 包进 `if not alasaos_bridge:`，
+   桥接模式只打一行「(alasaos 桥接：无需本地 adb)」；
+2. `_ = self.adb_client` 同样跳过（`AdbClient` 构造会去探 adb server）；
+3. `adb_binary` 这个 `cached_property` 入口加幂等防护：桥接模式直接 `return ''`，
+   即便被别处访问也不再触发探测/下载。
+
+注：桥接判断必须用 `self.config.Emulator_Serial`（`__init__` 里 config 已就位），
+**不能用 `self.serial`** —— 那个在本函数**末尾**才赋值。
+
+**教训**：给父类初始化「打补丁绕过」时，**先确认补丁点在父类调用的前还是后**。
+本例里 `Connection.__init__` 看着是「最早的」桥接判断，实际上 `super().__init__()` 已经把最贵的
+一步（自动下载）做完了。另外：把高成本初始化放进 `cached_property` 时，它的**隐式求值点**
+（这里是父类 `__init__` 里的一行 `logger.attr`）就不再受子类控制 —— 绕不过去就只能往父类里打补丁。
+
+**配套**：补丁生成器 `.tmp/make-azurpilot-patch.py` 已入库为 `rootfs/patches/make-azurpilot-patch.py`。
+本次差点因为「生成器不在仓库、`worker_registry` 那两处是手改进补丁的」而在重跑生成器时**静默回退**，
+故把生成器当构建资产一并入库（`build-rootfs.sh` 的报错文案同步更新）。
+
 ## [2026-09-25] Android 下 `/proc` 不可读 → 上游 worker_registry 的 psutil 自查失败，WebUI 反复自退
 
 - **现象**：装新包后 WebUI 起不来，但**退出码是 0**（不是崩溃）：
