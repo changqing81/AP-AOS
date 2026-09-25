@@ -4,6 +4,35 @@
 > **历史坑点（m0 阶段，全真机实证）见 `m0-archive/docs/debug.md` 与 `m0-archive/docs/devlog/`。** 高频索引：
 > WebView `vh` 塌缩（注入 innerHeight 修复）｜幻影进程查杀（`max_phantom_processes` / `settings_enable_monitor_phantom_procs`）｜mDNS `_adb-tls-connect` 端口过期但广播残留｜MaaFW PP-OCR 对 2D 单通道静默返空（堆叠 3ch）｜MaaFW 截图 BGR↔ALAS RGB 翻转｜RUN_COMMAND 权限只授清单声明方｜`am force-stop` 杀不掉 shell uid 残留（须显式 kill）｜桥 30s 无流量判死（10s 心跳）。
 
+## [2026-09-25] Android 下 `/proc` 不可读 → 上游 worker_registry 的 psutil 自查失败，WebUI 反复自退
+
+- **现象**：装新包后 WebUI 起不来，但**退出码是 0**（不是崩溃）：
+  ```
+  [proot-out] AlasAos wrapper: gui.py started pid=12231
+  [proot-out] AlasAos wrapper: gui.py exited code=0 uptime=9s, respawn in 10s   ← 循环重拉
+  ```
+  而 `gui.txt` 里其实已经打印到 `<<< LAUNCHER CONFIG >>>` / `<<< [WEBUI] WEBUI 配置 >>>` 之后才退。
+- **根本原因**：Android 内核对 `/proc` 有读取限制 —— app 进程读 `/proc/stat`、读别的进程的
+  `/proc/<pid>/stat` 会被拒（实测 `PermissionError: [Errno 13] '/proc/stat'`）。
+  上游 `module/webui/worker_registry.py` 用 `psutil.Process(pid).create_time()` 做 **PID 复用检测**
+  （防启动第二个 WebUI），两处都**直接 raise**，导致：
+  - `_process_created_at()` → `claim_owner()` 里未被捕获 → 启动即炸；
+  - `process_matches()` → `_record_is_alive()` 保守捕获后返回 `True` → `claim_owner()` 误判
+    「旧 WebUI 仍在运行」→ **拒绝启动**（这正是 `code=0` 的来源：程序自己判定不该继续）。
+  **注意**：proot 已经绑了 `/proc`（`ProotHost.kt` 的 `-b /proc:/proc`），所以这不是绑定问题，
+  是**内核硬限制** —— 从 proot 内部解决不了，只能让上游代码降级。
+- **解决方案**（`rootfs/patches/azurpilot-android.patch` 追加 2 处最小 diff）：
+  1. `_process_created_at()`：psutil 失败且 `pid == os.getpid()` 时改用 `time.time()` 近似
+     （首次调用后经 `_self_created_at` 缓存 → 进程存活期内**恒定**，足以支撑重复初始化判定）；
+     其它 pid 维持原 `raise`。
+  2. `process_matches()`：末尾的 `raise RuntimeError` 改为 `return None`（无法确认），
+     让 `_record_is_alive()` 判为「非存活」，从而允许启动。
+  **代价**：丧失 PID 复用检测 —— Android 上 WebUI 实例由 App 单点控制，风险可接受。
+- **教训**：**Android 上任何依赖 `/proc` 的进程自查（psutil 尤甚）都不可靠**。迁移上游代码到
+  Android 时，先全仓扫一遍 `psutil` / `/proc` / `os.kill` 的使用点。
+- **定位手法**：`exit code=0` 的自退 ≠ 崩溃 —— 优先怀疑「代码自己判定不该继续」
+  （所有权 / 重复实例 / 重复启动检查），直接去 `gui.txt` 找 `raise` 点。
+
 ## [2026-09-24] 体积裁剪删掉 `doc/`，上游 WebUI 启动即崩（StaticFiles 硬要求目录存在）
 
 - **现象**：真机装新包后 WebUI 起不来。启动器 `log/proot/session.log` 里 gui.py 反复秒退：
