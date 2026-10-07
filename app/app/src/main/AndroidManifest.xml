@@ -152,6 +152,17 @@
             </intent-filter>
         </receiver>
 
+        <!-- 双进程互相守护：主进程端服务 -->
+        <service
+            android:name=".keepalive.KeepAliveLocalService"
+            android:exported="false" />
+
+        <!-- 双进程互相守护：独立守护子进程端服务 -->
+        <service
+            android:name=".keepalive.KeepAliveDaemonService"
+            android:process=":daemon"
+            android:exported="false" />
+
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
