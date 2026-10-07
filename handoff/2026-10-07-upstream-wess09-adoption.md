@@ -32,8 +32,10 @@
 | C-2 | `01c55cd` | `7a8a908` | 虚拟屏帧率可调（16 文件：settings/MVI/UI/AIDL/特权侧/`DisplayManager.java`/strings） | ✅ 随 `d8c04d6` 验证（run `37620078058`） |
 | C | `b6354fe` | `e6337cf` | keepalive 多策略保活（13 Kotlin + 1 AIDL，约 1400 行；清单 5 权限 + 组件、`MaaFwApp`、`CoreModule`、无障碍转发、`keepAliveEnabled` 五件套） | ❌ run `37618029394` 失败（`combine` 超参） |
 | C | `4f56488` | `e6337cf` | keepalive 的 UI 部分：`KeepAliveCard`（7 状态行）+ 22 条中英文案 | ✅ 随 `d8c04d6` 验证 |
-| fix | `d8c04d6` | — | `SettingsViewModel` 的 `combine` 由 6 源回落 5 参（末两项合成 Pair） | 🔄 run `37620078058` 进行中（第 11 步编译） |
-| fix | `e0b6210` | — | 补回 `KeepAliveLocalService` / `KeepAliveDaemonService` 清单声明（7/7 对齐上游） | ⏳ **未推** |
+| fix | `d8c04d6` | — | `SettingsViewModel` 的 `combine` 由 6 源回落 5 参（末两项合成 Pair） | ✅ run `37620078058` 全绿（build + apk 双 job success，第 11 步编译 `12:24:11→12:29:19`） |
+| fix | `e0b6210` | — | 补回 `KeepAliveLocalService` / `KeepAliveDaemonService` 清单声明（7/7 对齐上游） | ⏳ **未推，未验证** |
+
+> ✅ **keepalive 已首次通过编译**（`b6354fe` + `4f56488` + `d8c04d6` 三者合起来，run `37620078058`）。
 
 **本地 HEAD = `e0b6210`；远端 `origin/main` = `d8c04d6`** → 本地**领先 1 个 commit**（`e0b6210`），**等用户点头才能 push**。
 
@@ -54,7 +56,7 @@
 
 ## 四、下一步（按优先级）
 
-1. **push `e0b6210` + 触发 CI**——keepalive 的最终编译验证。`d8c04d6` 的 run `37620078058` 只验到「清单漏声明修复之前」的代码，`e0b6210` 之后必须再跑一次。**push 必须先拿到用户明确点头**（AGENTS.md 第六节 + 用户红线）。
+1. **push `e0b6210` + 触发 CI**——keepalive 的最终编译验证。`d8c04d6` 的 run `37620078058` 已证明 keepalive 本身编译通过，但那次**不含**清单补声明；`e0b6210` 之后必须再跑一次确认。**push 必须先拿到用户明确点头**（AGENTS.md 第六节 + 用户红线）。
 2. **真机验收 keepalive**（本轮完全没上过机）：开关打开后 `dumpsys activity processes | grep daemon` 应能看到 `:daemon` 进程；否则「双进程守护」行仍是谎报。
 3. `c2994d7` 快捷方式（需动 `MainActivity.kt` + `ui/AppRoot.kt`，`AppRoot` 两边都大改，谨慎）。
 4. `154859e`/`a584bdd` 反馈入口（低优先，含对外链接，需用户确认运营意图）。
@@ -72,6 +74,7 @@
 3. **资源只取两份**：本仓只有 `values`/`values-en`，上游常同改 4 语言（含 `values-ja`/`values-zh-rTW`）→ 只取我们有的两份。
 4. **本机工具链确实不存在**（本次再测：`java`/`javac` 都不在 PATH；PATH 里 `D:\softinstall\jdk-18.0.1` 是**失效路径**）→ 编译验证只能走 CI 的 `apk` job（手动触发，`build_apk=true`）。
 5. **CI 触发与查状态**：本机 curl 打 `api.github.com` 返回 000（沙箱拦），查 run 状态用 WebFetch 打 `https://api.github.com/repos/changqing81/AP-AOS/actions/runs/<id>/jobs`；判断 `git push` 是否成功用 `git ls-remote origin main`（`origin/main` 本地跟踪 ref 会滞后，别拿它当远端真相）。
+   **⚠️ WebFetch 有 15 分钟自清理缓存**——反复打**同一个 URL** 会一直拿到**第一次**的响应。本次就因此把「已完成的 run」误读成「进行中」长达 20 分钟。**要看最新状态，必须换 URL**（例如换一个 `per_page=` 参数、或改打 `/actions/runs/<id>` 而非 `/jobs`，或等缓存过期）。
 6. **上游参考克隆**：`.tmp/wess-apa`（`wess09/AzurPilot-for-Android`，230 提交，`[blob:none]` 部分克隆，按需拉 blob，`--numstat`/`--stat` 类命令会超时，用 `--name-only`）。
 7. **⚠️ 并发写入风险（2026-10-07 实际发生）**：本轮 B-4 提交后，`RemoteBootTrace.kt` 在 **17:42:38** 被**另一个进程**再次写入——它独立加了同一个 `debugDir` 成员，与已提交的那份构成**重复声明**（Kotlin redeclaration，必编译失败）。判断为**另一个会话在并行做同一件 B-4 移植**。处置：手工消重，只留一份（`f5e3115` 之后的修复提交）。**教训**：`git add` 用显式路径是对的（没把对方改动扫进我的提交），但**提交前后都要复查 `git status --porcelain`**，发现非本人改动先停手确认，别盲目 `git add -A`，更别抢着 push。
 8. **⚠️ 移植 `AndroidManifest.xml` 必须逐组件对账，不能凭「编译过了」就算完（2026-10-07 踩到）**：`b6354fe` 采纳 keepalive 时漏了 `KeepAliveLocalService` / `KeepAliveDaemonService` 两个 `<service>`，**CI 全绿也发现不了**——组件未声明时 `startService` 只让 AMS 打一条 "not found" 日志并返回 null，**不抛异常**；调用点又包在 `runCatching` 里，连兜底日志都不会打。结果是功能静默失效 + **设置页状态行谎报「已激活」**。
