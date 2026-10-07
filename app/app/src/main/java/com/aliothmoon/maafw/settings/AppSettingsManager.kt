@@ -77,6 +77,9 @@ class AppSettingsManager(private val context: Context) : AppSettingsGateway {
     private val _virtualDisplayRefreshRate = MutableStateFlow(parseRefreshRate(defaults.virtualDisplayRefreshRate))
     override val virtualDisplayRefreshRate: StateFlow<Float> = _virtualDisplayRefreshRate.asStateFlow()
 
+    private val _keepAliveEnabled = MutableStateFlow(defaults.keepAliveEnabled.toBoolean())
+    override val keepAliveEnabled: StateFlow<Boolean> = _keepAliveEnabled.asStateFlow()
+
     init {
         // 一处 collect 铺开到各字段，而不是每个字段各起一条 stateIn：
         // 那样 loaded 置位与各字段拿到首值是两件并发的事，早读的人仍可能读到默认值
@@ -91,6 +94,7 @@ class AppSettingsManager(private val context: Context) : AppSettingsGateway {
                 _autoCleanLogs.value = s.autoCleanLogs.toBoolean()
                 _themeStyle.value = parseThemeStyle(s.themeStyle)
                 _virtualDisplayRefreshRate.value = parseRefreshRate(s.virtualDisplayRefreshRate)
+                _keepAliveEnabled.value = s.keepAliveEnabled.toBoolean()
                 // 必须是最后一行：置位即宣告上面全部就位
                 _loaded.value = true
             }
@@ -123,6 +127,10 @@ class AppSettingsManager(private val context: Context) : AppSettingsGateway {
 
     override suspend fun setAutoCleanLogs(enabled: Boolean): Unit = with(AppSettingsSchema) {
         context.dataStore.edit { it[autoCleanLogs] = enabled.toString() }
+    }
+
+    override suspend fun setKeepAliveEnabled(enabled: Boolean): Unit = with(AppSettingsSchema) {
+        context.dataStore.edit { it[keepAliveEnabled] = enabled.toString() }
     }
 
     override suspend fun setThemeStyle(style: ThemeStyle): Unit = with(AppSettingsSchema) {

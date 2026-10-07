@@ -1,6 +1,7 @@
 package com.aliothmoon.maafw
 
 import android.app.Application
+import android.os.Build
 import com.aliothmoon.maafw.constant.AppPaths
 import com.aliothmoon.maafw.di.AppCoroutineScope
 import com.aliothmoon.maafw.di.coreModule
@@ -11,6 +12,7 @@ import com.aliothmoon.maafw.di.privilegedModule
 import com.aliothmoon.maafw.di.prootModule
 import com.aliothmoon.maafw.di.provisionModule
 import com.aliothmoon.maafw.di.viewModelModule
+import com.aliothmoon.maafw.keepalive.KeepAliveManager
 import com.aliothmoon.maafw.log.AppLogWriter
 import com.aliothmoon.maafw.log.CrashHandler
 import com.aliothmoon.maafw.log.LogCleaner
@@ -43,6 +45,13 @@ class MaaFwApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        if (!isMainProcess()) {
+            if (BuildConfig.DEBUG) {
+                Timber.plant(Timber.DebugTree())
+            }
+            Timber.d("MaaFwApp: Secondary daemon process initialized (PID=" + android.os.Process.myPid() + ")")
+            return
+        }
         AppPaths.init(this)
         CrashHandler().install()
         val app = this
@@ -82,5 +91,17 @@ class MaaFwApp : Application() {
         koin.get<AlasRunController>().start()
         koin.get<OverlayController>().setup()
         koin.get<ScreenSaverOverlayManager>().setup()
+        koin.get<KeepAliveManager>().start()
+    }
+
+    private fun isMainProcess(): Boolean {
+        val processName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            getProcessName()
+        } else {
+            val pid = android.os.Process.myPid()
+            val am = getSystemService(ACTIVITY_SERVICE) as? android.app.ActivityManager
+            am?.runningAppProcesses?.find { it.pid == pid }?.processName ?: packageName
+        }
+        return processName == packageName
     }
 }

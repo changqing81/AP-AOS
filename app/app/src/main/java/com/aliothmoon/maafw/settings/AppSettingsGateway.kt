@@ -23,6 +23,9 @@ interface AppSettingsGateway {
     val autoCleanLogs: StateFlow<Boolean>
     suspend fun setAutoCleanLogs(enabled: Boolean)
 
+    val keepAliveEnabled: StateFlow<Boolean>
+    suspend fun setKeepAliveEnabled(enabled: Boolean)
+
     val themeStyle: StateFlow<ThemeStyle>
     suspend fun setThemeStyle(style: ThemeStyle)
 

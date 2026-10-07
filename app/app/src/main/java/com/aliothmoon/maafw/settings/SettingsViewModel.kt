@@ -28,13 +28,15 @@ class SettingsViewModel(
         appSettings.themeStyle,
         appSettings.autoCleanLogs,
         appSettings.virtualDisplayRefreshRate,
-    ) { remoteAccess, userConfig, themeStyle, autoCleanLogs, refreshRate ->
+        appSettings.keepAliveEnabled,
+    ) { remoteAccess, userConfig, themeStyle, autoCleanLogs, refreshRate, keepAliveEnabled ->
         SettingsUiState(
             remoteAccess = remoteAccess,
             themeMode = userConfig.themeMode,
             themeStyle = themeStyle,
             autoCleanLogs = autoCleanLogs,
             virtualDisplayRefreshRate = refreshRate,
+            keepAliveEnabled = keepAliveEnabled,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -64,6 +66,10 @@ class SettingsViewModel(
 
             is SettingsIntent.SetVirtualDisplayRefreshRate -> viewModelScope.launch {
                 appSettings.setVirtualDisplayRefreshRate(intent.rate)
+            }
+
+            is SettingsIntent.SetKeepAlive -> viewModelScope.launch {
+                appSettings.setKeepAliveEnabled(intent.enabled)
             }
         }
     }

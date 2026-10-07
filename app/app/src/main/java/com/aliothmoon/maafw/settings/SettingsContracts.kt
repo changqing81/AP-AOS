@@ -16,6 +16,7 @@ data class SettingsUiState(
     val themeMode: ThemeMode = ThemeMode.System,
     val themeStyle: ThemeStyle = ThemeStyle.DEFAULT,
     val autoCleanLogs: Boolean = true,
+    val keepAliveEnabled: Boolean = false,
     /** 虚拟屏请求刷新率；0 = 跟随物理屏 */
     val virtualDisplayRefreshRate: Float = 0f,
 )
@@ -32,6 +33,9 @@ sealed interface SettingsIntent {
     data class SetLanguage(val tag: String?) : SettingsIntent
 
     data class SetAutoCleanLogs(val enabled: Boolean) : SettingsIntent
+
+    /** 切换激进后台保活系统 / Toggle persistent keep-alive */
+    data class SetKeepAlive(val enabled: Boolean) : SettingsIntent
 
     /** 虚拟屏请求刷新率；0 = 跟随物理屏（下次建屏时生效） */
     data class SetVirtualDisplayRefreshRate(val rate: Float) : SettingsIntent
