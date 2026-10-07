@@ -31,6 +31,13 @@
 | **`screencap -d` 与 `input -d` 的 display id 是两个命名空间** | 本仓走桥（TCP 22300），不走 adb 通道 |
 | **Shizuku 未授权时直接 bind 只静默失败**，启动按钮必须走权限入口 | ⚠️ 本仓 `RootRemoteServiceConnector` 行为需核对 |
 
+## [2026-10-07] 测试源集 `app/src/test` 已与主源集脱节：`FakeAppSettingsGateway` 引用不存在的符号，CI 却永远看不见
+
+- **现象**：`app/app/src/test/java/com/aliothmoon/maafw/settings/FakeAppSettingsGateway.kt` 里用 `override` 实现了 6 个**接口里根本没有**的成员——`closeAppAfterTask`、`touchPreviewEnabled`、`resolutionPreference`、`wakeUnlockEnabled`、`wakeCredential`、`telemetryEnabled`；并 `import com.aliothmoon.maafw.runner.ResolutionPreference`，而该类型在**全仓源码里不存在**（`grep -rn ResolutionPreference app/` 只命中 `app/app/src/main/generated/baselineProfiles/baseline-prof.txt` 这份**旧构建产物**留下的类名）。
+- **根本原因**：`AppSettingsGateway` 接口在某次变更里被裁剪到只剩 5 项（runMode / overlayControlMode / screenSaverEnabled / autoCleanLogs / themeStyle），`runner.ResolutionPreference` 也随包一起被移除，但测试假件没跟着改。而 `.github/workflows/rootfs.yml` 的 apk job 只跑 `./gradlew :app:assembleDebug`——**不编译单测**，所以这个编译错误在 CI 上永远不可见。
+- **影响**：任何人执行 `./gradlew testDebugUnitTest` 都会先撞上它，报错位置（gateway 假件）与自己的改动无关，**极易误判成「是我改坏的」**。本次移植 C-2（虚拟屏帧率）时给接口新增成员，就差点被这个假件的既有错误带偏。
+- **解决方案（本次未执行，待定）**：删掉该文件里那 6 个孤儿 `override` 与 `ResolutionPreference` 的 import/字段，或按现行接口重写该 fake。**修之前先扫一遍 `app/src/test` 里其它同类脱节文件**（本次只核查了「`AppSettingsGateway` 实现者」与「`RemoteService.Stub` 实现者」两类）。可选加固：CI 增加一个只编译单测的 job（`./gradlew :app:compileDebugUnitTestKotlin`），让这类脱节立刻可见。
+
 ## [2026-09-25] 批量 `git rm` 放前台被超时打断 → 192 个文件变「工作树已删」
 
 **现象**：一条含「批量 `git rm` + 慢速全仓 grep」的**前台**命令被超时 SIGTERM 打断后，

@@ -2,6 +2,18 @@
 
 > 倒序排列，最新在上；按发版版本号分段。
 
+### 2026-10-07 · 采纳 🔧：选择性移植上游同源 fork `wess09/AzurPilot-for-Android`（A/B/C 分批）
+
+- **背景**：用户要求「合并上游优质提交」。只读侦察结论见 `docs/upstream-wess09-fork-diff.md`：两仓**共享完整历史**（共同祖先 `adc9f19`，2026-09-21 v0.1.4 收官），他独有 111 条有效提交、我们独有 42 条，**双向大分叉**；他做过 App 侧包名重构（`com.azurpilot.ghio` vs 本仓 `com.aliothmoon.maafw`）→ **不能 cherry-pick，只能按文件对位手工改写**。
+- **A 类（`c0a5d64`）**：收编他的 `doc/` 13 篇技术文档 → `docs/upstream-wess09-ref/`，附出处与注意事项（`_SOURCE-AND-CAVEATS.md`）；量化差异补 §3.5（`61a4112`）。
+- **B-2（`95e6cfe`）渠道 SDK 弹窗回迁虚拟屏**：来源 `0129bfa` + `d604b82`。新增 `SdkTaskRepatriator.kt`（250 行，每秒比对主屏任务增量、命中渠道 SDK/厂商系统包白名单就搬回虚拟屏）+ `ActivityUtils` 三成员（`lastLaunchedPackage`/`snapshotRunningTasks()`/`TaskOnDisplay`，抽出 `moveTaskById()`）+ `RemoteServiceImpl` 4 处启停。解决 vivo OriginOS 等定制 ROM 把 `com.vivo.*` 的 Activity 重定向到主屏、渠道服 SDK 登录页卡在主屏之下（截图与注入都够不到、游戏等不到登录回调）。**CI run `37598427496` 全绿**。
+- **B-1（`1e806f8`）虚拟屏帧卡踢活**：来源 `8e33253`。`WatchdogState` 新增 `FRAME_STALLED(4)`（`isLost` 刻意不含它）；`AppWatchdog` +134 行帧停滞检测（每拍读 `NativeBridgeLib.getFrameCount()`，20s 不涨判定冻结 → launcher intent 踢活，踢满 3 次仍停滞才上报）；`BridgeServer` 的 screencap 响应加 `frames` 字段。解决息屏后 ROM cached-app freezer 冻结虚拟屏上的游戏、自动化卡死在同一画面（如登录页）反复点击直到 `GameTooManyClickError`。**一处合理降级**：上游停滞日志还打 `NativeBridgeLib.getCaptureDiagnostics()`，本仓 native 侧无此方法，降级为只记帧序号与踢活次数。**CI run `37600184429`：build job 全绿，apk job「Build debug APK」success**。
+- **B-4（`66d8e55`）特权进程日志落盘进导出包**：来源 `055266c`。**手工改写**——上游 `Ln` 是 Kotlin object、本仓是 Java final class（同源 scrcpy 血统），按 Java 语义重写文件 sink：`initFileSink(dir)` 幂等、目标 `debug/remote_process_debug.log`、512 KB 上限滚动 `.1`、写失败全吞；`v/d/i/w/e` 五级各追加一路。**相对上游一处加固**：上游 `appendSinkLocked` 在 `v/d/i/w/e` 里被**无锁调用**（其 KDoc 自称「须持锁」而调用点未持），本仓改为 `appendSink` 内部 `synchronized`。`RemoteBootTrace` 新增 `debugDir` 复用已验证可写的路径推导。收集侧零改动：`LogModule.kt:19` 的 `launcherRoots` 已含 `AppPaths.DEBUG_DIR`。
+- **C-2（`01c55cd`）虚拟屏帧率可调**：来源 `7a8a908`。上游 UI 走 `koinInject<AppSettingsManager>()` 直连 + `App*` 组件，本仓是 MVI（`SettingsUiState`/`SettingsIntent`/`AppSettingsGateway`）+ `Maa*` 组件 → **按本仓架构重排**（16 文件）：`AppSettings` 新增 `virtualDisplayRefreshRate`（String 落盘，默认 `"0"` = 跟随物理屏）；`SettingsViewModel.combine` 由 4 路扩 5 路；`SettingsScreen` 新增 `VirtualDisplayFrameRateCard`（Slider，上限取物理屏刷新率并监听 `DisplayManager.DisplayListener` 跟随变化，最大档存 0）；AIDL 新增 `setVirtualDisplayRefreshRate(float) = 76`；Android 14+ 走 `VirtualDisplayConfig.Builder(...).setRequestedRefreshRate(min(请求, 物理屏))`；`HostState` 建屏前 `appSettings.loaded.first { it }` 再下发（本仓 `.value` 是同步读，必须先等首次读盘落地）。
+- **C 类其余判定（证据见 diff 文档 §3）**：`87c58b6`（实例配置导入）、`15b7a9b`（ExpressiveLoadingIndicator）**断链跳过**——都依赖他独有的 `ui/azurpilot/` 原生 UI 层，本仓走 WebView/pywebio；`31b73ba`/`37e5fe2`（splash 圆形遮罩 + 启动图标）为二进制观感类且会删本仓 mipmap，**暂缓**；`a7e03ea` 仅 4 份 strings 无配套代码，**跳过**；`154859e`/`a584bdd`（反馈/加群入口）、`c2994d7`（launcher 快捷方式）**可行、未做**；`e6337cf`（多策略保活，29 文件 +1434 行）**可行但工作量大**，需单独批次并单独 CI 验证。
+- **本机工具链**：本次再次实测**无 JDK**（`java`/`javac` 均不在 PATH，PATH 里那条 `D:\softinstall\jdk-18.0.1` 是**失效路径**）→ 编译验证只能走 CI 的 `apk` job。
+- **账册**：本次补写 `handoff/2026-10-07-upstream-wess09-adoption.md`（此前 `handoff/` 最新只到 2026-09-21，09-25 之后的工作一直没写交接档，违反 AGENTS.md 第二节）。
+
 ### 2026-09-25 · 修复 🔧：切页不再闪「启动环境」/不再黑屏重载（采纳同源 fork 的 v0.1.5 修复）
 
 - **背景**：真机日志（2026-09-25 16:17）里 `app.log` 反复出现 `HostState: bridge probe failed: null`。对照 `wess09/AzurPilot-for-Android`（**同源 fork**，同包名 `com.aliothmoon.maafw`，已到 v0.1.5）的 `f90b7db`，确认是**同一个问题**，且其归因带真机实证（14/14 次切页「启动环境」出现次数归零）。
