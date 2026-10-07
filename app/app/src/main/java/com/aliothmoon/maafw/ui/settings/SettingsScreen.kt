@@ -4,6 +4,7 @@ import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.Display
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -18,12 +19,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,10 +44,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import com.aliothmoon.maafw.domain.ThemeMode
 import com.aliothmoon.maafw.i18n.AppLocales
+import com.aliothmoon.maafw.keepalive.KeepAliveManager
+import com.aliothmoon.maafw.service.AccessibilityHelperService
 import com.aliothmoon.maafw.settings.SettingsIntent
 import com.aliothmoon.maafw.settings.SettingsUiState
 import com.aliothmoon.maafw.theme.MaaDesignTokens
 import com.aliothmoon.maafw.theme.ThemeStyle
+import kotlinx.coroutines.flow.MutableStateFlow
 import com.aliothmoon.maafw.ui.components.MaaCard
 import com.aliothmoon.maafw.ui.components.MaaFieldLabel
 import com.aliothmoon.maafw.ui.components.MaaInfoRow
@@ -98,6 +104,7 @@ fun SettingsScreen(
         ) {
             DisplayCard(state, onIntent)
             VirtualDisplayFrameRateCard(state, onIntent)
+            KeepAliveCard(state, onIntent)
             LogCard(state, onIntent, onOpenAppLog, onOpenAlasLog, onExportAlasLogs, onExportLauncherLogs)
             OtherCard(state, onIntent)
             AboutCard()
@@ -325,6 +332,122 @@ private fun LogCard(
                     Text(stringResource(R.string.dialog_cancel))
                 }
             },
+        )
+    }
+}
+
+
+/** 激进后台保活系统卡片（采纳上游 e6337cf，改用本仓 Maa* 组件与 KeepAliveManager.getInstance） */
+@Composable
+private fun KeepAliveCard(
+    state: SettingsUiState,
+    onIntent: (SettingsIntent) -> Unit,
+) {
+    val context = LocalContext.current
+    val manager = KeepAliveManager.getInstance()
+    val fallback = remember { MutableStateFlow(false) }
+    val isAudioPlaying by (manager?.isAudioPlaying ?: fallback).collectAsState()
+    val isOverlayAttached by (manager?.isPixelOverlayAttached ?: fallback).collectAsState()
+    val isWakeLockHeld by (manager?.isWakeLockHeld ?: fallback).collectAsState()
+    val isAccessibilityConnected by (manager?.isAccessibilityConnected ?: fallback).collectAsState()
+    val hasOverlayPermission = remember(state.keepAliveEnabled) {
+        Settings.canDrawOverlays(context)
+    }
+    val hasAccessibility = remember(state.keepAliveEnabled, isAccessibilityConnected) {
+        AccessibilityHelperService.isServiceEnabled(context) || isAccessibilityConnected
+    }
+    val active = stringResource(R.string.settings_keepalive_status_active)
+    val inactive = stringResource(R.string.settings_keepalive_status_inactive)
+
+    MaaCard(title = stringResource(R.string.settings_section_keepalive), collapsible = true) {
+        MaaFieldLabel(stringResource(R.string.settings_keepalive_title))
+        Switch(
+            checked = state.keepAliveEnabled,
+            onCheckedChange = { enabled -> onIntent(SettingsIntent.SetKeepAlive(enabled)) },
+        )
+        Text(
+            text = stringResource(R.string.settings_keepalive_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        MaaInfoRow(
+            stringResource(R.string.settings_keepalive_audio),
+            if (state.keepAliveEnabled && isAudioPlaying) active else inactive,
+        )
+        Text(
+            text = stringResource(R.string.settings_keepalive_audio_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        MaaInfoRow(
+            stringResource(R.string.settings_keepalive_pixel),
+            when {
+                !state.keepAliveEnabled -> inactive
+                isOverlayAttached -> active
+                !hasOverlayPermission -> stringResource(R.string.settings_keepalive_status_need_permission)
+                else -> inactive
+            },
+        )
+        Text(
+            text = stringResource(R.string.settings_keepalive_pixel_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        MaaInfoRow(
+            stringResource(R.string.settings_keepalive_wakelock),
+            if (state.keepAliveEnabled && isWakeLockHeld) active else inactive,
+        )
+        Text(
+            text = stringResource(R.string.settings_keepalive_wakelock_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        MaaInfoRow(
+            stringResource(R.string.settings_keepalive_alarm_job),
+            if (state.keepAliveEnabled) active else inactive,
+        )
+        Text(
+            text = stringResource(R.string.settings_keepalive_alarm_job_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        MaaInfoRow(
+            stringResource(R.string.settings_keepalive_daemon_broadcast),
+            if (state.keepAliveEnabled) active else inactive,
+        )
+        Text(
+            text = stringResource(R.string.settings_keepalive_daemon_broadcast_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        MaaInfoRow(
+            stringResource(R.string.settings_keepalive_companion),
+            if (state.keepAliveEnabled) active else inactive,
+        )
+        Text(
+            text = stringResource(R.string.settings_keepalive_companion_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        MaaInfoRow(
+            stringResource(R.string.settings_keepalive_accessibility),
+            when {
+                !state.keepAliveEnabled -> inactive
+                isAccessibilityConnected || hasAccessibility -> active
+                else -> stringResource(R.string.settings_keepalive_status_need_accessibility)
+            },
+        )
+        Text(
+            text = stringResource(R.string.settings_keepalive_accessibility_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
