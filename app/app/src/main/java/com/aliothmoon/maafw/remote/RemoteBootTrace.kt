@@ -40,6 +40,17 @@ object RemoteBootTrace {
         )
     }
 
+    /**
+     * trace 所在的诊断目录；与 App 侧 [com.aliothmoon.maafw.constant.AppPaths.DEBUG_DIR] 指向
+     * 同一处。供进程内其它落盘诊断（如 [Ln] 的文件 sink）复用同一条已验证可写的路径推导。
+     *
+     * The diagnostic directory holding the trace file; the same directory the app side
+     * sees as [com.aliothmoon.maafw.constant.AppPaths.DEBUG_DIR]. Lets other in-process
+     * file diagnostics (the [Ln] file sink, say) reuse this verified-writable path
+     * derivation.
+     */
+    val debugDir: File by lazy { traceFile.parentFile ?: File(".") }
+
     fun mark(stage: String, msg: String = "") {
         synchronized(lock) {
             runCatching {
