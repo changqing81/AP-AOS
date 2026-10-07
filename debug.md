@@ -31,12 +31,37 @@
 | **`screencap -d` 与 `input -d` 的 display id 是两个命名空间** | 本仓走桥（TCP 22300），不走 adb 通道 |
 | **Shizuku 未授权时直接 bind 只静默失败**，启动按钮必须走权限入口 | ⚠️ 本仓 `RootRemoteServiceConnector` 行为需核对 |
 
+## [2026-10-07] 移植上游 `AndroidManifest.xml` 漏声明 = 静默失效 + 设置页谎报「已激活」（CI 全绿也发现不了）
+
+- **现象**：采纳上游 `e6337cf`（keepalive）的提交 `b6354fe` 里，`AndroidManifest.xml` 只声明了 5 个 keepalive 组件，漏了 `KeepAliveLocalService` 与 `KeepAliveDaemonService`（后者还带 `android:process=":daemon"`）。**CI 完全绿**——编译、打包、装包都没问题。
+- **根本原因**：`startService()` 指向**未声明**的显式组件时，AMS 只打一条 `Unable to start service Intent { ... }: not found` 并返回 `null ComponentName`，**不抛异常**；而调用点恰好都包在 `runCatching` 里（`KeepAliveLocalService.start` / `KeepAliveDaemonService.start` 各自 `runCatching { context.startService(intent) }.onFailure { ... }`）→ 连兜底日志都不会打。于是双进程互拉守护**从未真正启动过**，而设置页「双进程守护」状态行只要开关打开就恒显示「已激活」。
+- **连带后果**：`:daemon` 进程不存在 → `MaaFwApp.isMainProcess()` 的非主进程早退分支成为死代码；`IKeepAliveDaemon.aidl` 编译通过但运行期无任何组件暴露/绑定它。
+- **解决方案（已执行，`e0b6210`）**：补回两个 `<service>` 声明，keepalive 组件 7/7 与上游一致。
+- **对账办法（可复用）**：① 比对上游 commit 的 `--stat` 新增行数（本次上游 62 行 vs 本仓 51 行，差额 11 行正好是这两段 `<service>` + 注释）；② 逐条列出组件名做**集合比对**，不要只看「文件同名/文件都在」；③ 清单类改动**不能以「CI 绿」作为验收依据**。
+
+## [2026-10-07] Kotlin `combine` 第 6 个源会落到 vararg 重载，报错长得完全不像重载问题
+
+- **现象**：CI run `37618029394` 第 11 步「Build debug APK」失败 8 条错误，全在 `SettingsViewModel.kt:32~35`：
+  `Argument type mismatch: actual type is 'suspend (Array<Any>, ???)'` + 一串 `Cannot infer type for value parameter 'userConfig' / 'themeStyle' / ...`。**从报错完全看不出根因是「源太多」**。
+- **根本原因**：`kotlinx.coroutines` 的 `combine` 只有 **2~5 参**重载；本仓 C-2（虚拟屏帧率）之后 `SettingsViewModel` 已有 5 个源，保活再加 `keepAliveEnabled` 变成 **6 个** → 落到 `vararg` 重载 `combine(vararg flows, transform: suspend (Array<T>) -> R)`，lambda 参数变成 `Array<Any>`，后续全部类型推断崩。上游 `e6337cf` 只需 4 个源，所以它那边不撞这个上限——**是本仓比上游多一个源的缘故**。
+- **解决方案（已执行，`d8c04d6`）**：把末两项先合成 `Pair` 再参与 5 参重载：
+  ```kotlin
+  combine(appSettings.virtualDisplayRefreshRate, appSettings.keepAliveEnabled) { rate, keep -> rate to keep }
+  ```
+  语义不变，只规避重载上限。**后续再往 `SettingsUiState` 加源时，要记得这里已经在用「Pair 打包」的补丁写法**。
+
 ## [2026-10-07] 测试源集 `app/src/test` 已与主源集脱节：`FakeAppSettingsGateway` 引用不存在的符号，CI 却永远看不见
 
 - **现象**：`app/app/src/test/java/com/aliothmoon/maafw/settings/FakeAppSettingsGateway.kt` 里用 `override` 实现了 6 个**接口里根本没有**的成员——`closeAppAfterTask`、`touchPreviewEnabled`、`resolutionPreference`、`wakeUnlockEnabled`、`wakeCredential`、`telemetryEnabled`；并 `import com.aliothmoon.maafw.runner.ResolutionPreference`，而该类型在**全仓源码里不存在**（`grep -rn ResolutionPreference app/` 只命中 `app/app/src/main/generated/baselineProfiles/baseline-prof.txt` 这份**旧构建产物**留下的类名）。
 - **根本原因**：`AppSettingsGateway` 接口在某次变更里被裁剪到只剩 5 项（runMode / overlayControlMode / screenSaverEnabled / autoCleanLogs / themeStyle），`runner.ResolutionPreference` 也随包一起被移除，但测试假件没跟着改。而 `.github/workflows/rootfs.yml` 的 apk job 只跑 `./gradlew :app:assembleDebug`——**不编译单测**，所以这个编译错误在 CI 上永远不可见。
 - **影响**：任何人执行 `./gradlew testDebugUnitTest` 都会先撞上它，报错位置（gateway 假件）与自己的改动无关，**极易误判成「是我改坏的」**。本次移植 C-2（虚拟屏帧率）时给接口新增成员，就差点被这个假件的既有错误带偏。
 - **解决方案（本次未执行，待定）**：删掉该文件里那 6 个孤儿 `override` 与 `ResolutionPreference` 的 import/字段，或按现行接口重写该 fake。**修之前先扫一遍 `app/src/test` 里其它同类脱节文件**（本次只核查了「`AppSettingsGateway` 实现者」与「`RemoteService.Stub` 实现者」两类）。可选加固：CI 增加一个只编译单测的 job（`./gradlew :app:compileDebugUnitTestKotlin`），让这类脱节立刻可见。
+- **【同日扩查】脱节范围比上面记的更大，是系统性失修**（本次按「先全局扫描再动手」原则补扫）：
+  - `FakeAppSettingsGateway.kt`：除 6 个孤儿 `override` 外，还**缺** `keepAliveEnabled`（接口新增成员）→ 既多又少，共 7 处错误。
+  - `runner/EnvironmentHooksTest.kt`：引用 `wakeUnlockEnabled` / `wakeCredential` / `closeAppAfterTask`（均不在现行接口）。
+  - `runner/MaaFrameworkRunnerPortTest.kt`：引用 `ResolutionPreference.P720`。
+  - `session/SessionViewModelTest.kt`：`import com.aliothmoon.maafw.runner.ResolutionPreference`（主源集已无此类）。
+  → 结论：**不是「补几行就行」，需要一次独立的测试源集修复任务**，顺带把 CI 的单测编译 job 一起补上；在那之前，`app/src/test` 的编译状态都不具备参考价值。
 
 ## [2026-09-25] 批量 `git rm` 放前台被超时打断 → 192 个文件变「工作树已删」
 
