@@ -62,3 +62,4 @@
 4. **本机工具链确实不存在**（本次再测：`java`/`javac` 都不在 PATH；PATH 里 `D:\softinstall\jdk-18.0.1` 是**失效路径**）→ 编译验证只能走 CI 的 `apk` job（手动触发，`build_apk=true`）。
 5. **CI 触发与查状态**：本机 curl 打 `api.github.com` 返回 000（沙箱拦），查 run 状态用 WebFetch 打 `https://api.github.com/repos/changqing81/AP-AOS/actions/runs/<id>/jobs`；判断 `git push` 是否成功用 `git ls-remote origin main`（`origin/main` 本地跟踪 ref 会滞后，别拿它当远端真相）。
 6. **上游参考克隆**：`.tmp/wess-apa`（`wess09/AzurPilot-for-Android`，230 提交，`[blob:none]` 部分克隆，按需拉 blob，`--numstat`/`--stat` 类命令会超时，用 `--name-only`）。
+7. **⚠️ 并发写入风险（2026-10-07 实际发生）**：本轮 B-4 提交后，`RemoteBootTrace.kt` 在 **17:42:38** 被**另一个进程**再次写入——它独立加了同一个 `debugDir` 成员，与已提交的那份构成**重复声明**（Kotlin redeclaration，必编译失败）。判断为**另一个会话在并行做同一件 B-4 移植**。处置：手工消重，只留一份（`f5e3115` 之后的修复提交）。**教训**：`git add` 用显式路径是对的（没把对方改动扫进我的提交），但**提交前后都要复查 `git status --porcelain`**，发现非本人改动先停手确认，别盲目 `git add -A`，更别抢着 push。
