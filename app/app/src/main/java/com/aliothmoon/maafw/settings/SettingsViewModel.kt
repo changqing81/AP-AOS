@@ -27,12 +27,14 @@ class SettingsViewModel(
         userConfigurationStore.data,
         appSettings.themeStyle,
         appSettings.autoCleanLogs,
-    ) { remoteAccess, userConfig, themeStyle, autoCleanLogs ->
+        appSettings.virtualDisplayRefreshRate,
+    ) { remoteAccess, userConfig, themeStyle, autoCleanLogs, refreshRate ->
         SettingsUiState(
             remoteAccess = remoteAccess,
             themeMode = userConfig.themeMode,
             themeStyle = themeStyle,
             autoCleanLogs = autoCleanLogs,
+            virtualDisplayRefreshRate = refreshRate,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -58,6 +60,10 @@ class SettingsViewModel(
 
             is SettingsIntent.SetAutoCleanLogs -> viewModelScope.launch {
                 appSettings.setAutoCleanLogs(intent.enabled)
+            }
+
+            is SettingsIntent.SetVirtualDisplayRefreshRate -> viewModelScope.launch {
+                appSettings.setVirtualDisplayRefreshRate(intent.rate)
             }
         }
     }

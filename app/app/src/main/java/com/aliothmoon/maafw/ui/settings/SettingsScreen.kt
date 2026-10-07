@@ -1,5 +1,10 @@
 package com.aliothmoon.maafw.ui.settings
 
+import android.hardware.display.DisplayManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.view.Display
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -12,21 +17,25 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.res.stringResource
 import com.aliothmoon.maafw.BuildConfig
 import com.aliothmoon.maafw.R
+import com.aliothmoon.maafw.constant.AndroidVersions
 import com.aliothmoon.maafw.domain.RemoteBackend
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -43,6 +52,7 @@ import com.aliothmoon.maafw.ui.components.MaaLabeledControlRow
 import com.aliothmoon.maafw.ui.components.MaaNavigationRow
 import com.aliothmoon.maafw.ui.components.MaaSingleChoiceFlow
 import com.aliothmoon.maafw.ui.components.MaaSwitch
+import kotlin.math.round
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,6 +97,7 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(MaaDesignTokens.Spacing.lg),
         ) {
             DisplayCard(state, onIntent)
+            VirtualDisplayFrameRateCard(state, onIntent)
             LogCard(state, onIntent, onOpenAppLog, onOpenAlasLog, onExportAlasLogs, onExportLauncherLogs)
             OtherCard(state, onIntent)
             AboutCard()
@@ -123,6 +134,85 @@ private fun DisplayCard(state: SettingsUiState, onIntent: (SettingsIntent) -> Un
         Spacer(Modifier.height(MaaDesignTokens.Spacing.sm))
         MaaFieldLabel(stringResource(R.string.settings_language))
         LanguageChoice(onIntent)
+    }
+}
+
+/**
+ * 虚拟屏帧率：下次建屏时生效，仅 Android 14+ 支持
+ *
+ * 档位上限取物理屏当前刷新率并跟随其变化（0 存盘 = 跟随物理屏）；
+ * 物理屏读不到刷新率时不给调，避免把虚拟屏锁到一个瞎猜的值上
+ */
+@Composable
+private fun VirtualDisplayFrameRateCard(
+    state: SettingsUiState,
+    onIntent: (SettingsIntent) -> Unit,
+) {
+    val context = LocalContext.current
+    val displays = remember(context) { context.getSystemService(DisplayManager::class.java) }
+    var maximum by remember(displays) {
+        mutableStateOf(displays.getDisplay(Display.DEFAULT_DISPLAY)?.refreshRate ?: 0f)
+    }
+    DisposableEffect(displays) {
+        fun updateMaximum() {
+            maximum = displays.getDisplay(Display.DEFAULT_DISPLAY)?.refreshRate ?: 0f
+        }
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = updateMaximum()
+            override fun onDisplayRemoved(displayId: Int) = updateMaximum()
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId == Display.DEFAULT_DISPLAY) updateMaximum()
+            }
+        }
+        displays.registerDisplayListener(listener, Handler(Looper.getMainLooper()))
+        updateMaximum()
+        onDispose { displays.unregisterDisplayListener(listener) }
+    }
+    val supported = Build.VERSION.SDK_INT >= AndroidVersions.API_34_ANDROID_14
+    val available = maximum.isFinite() && maximum > 1f
+    val upper = if (available) maximum else 60f
+    val savedRate = state.virtualDisplayRefreshRate
+    var selected by remember(savedRate, upper) {
+        mutableStateOf(if (savedRate == 0f) upper else savedRate.coerceIn(1f, upper))
+    }
+    MaaCard(title = stringResource(R.string.settings_virtual_display_rate), collapsible = true) {
+        if (supported) {
+            MaaInfoRow(
+                stringResource(R.string.settings_virtual_display_rate_requested),
+                stringResource(R.string.settings_virtual_display_rate_value, selected),
+            )
+            Slider(
+                value = selected,
+                onValueChange = { selected = round(it).coerceIn(1f, upper) },
+                onValueChangeFinished = {
+                    // 最大档存 0：后续启动继续跟随主屏当时的刷新率
+                    onIntent(SettingsIntent.SetVirtualDisplayRefreshRate(if (selected == upper) 0f else selected))
+                },
+                valueRange = 1f..upper,
+                enabled = available,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (available) {
+                MaaInfoRow(
+                    stringResource(R.string.settings_virtual_display_rate_maximum),
+                    stringResource(R.string.settings_virtual_display_rate_value, maximum),
+                )
+            }
+            Text(
+                text = stringResource(
+                    if (available) R.string.settings_virtual_display_rate_hint
+                    else R.string.settings_virtual_display_rate_unavailable,
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                text = stringResource(R.string.settings_virtual_display_rate_unsupported),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

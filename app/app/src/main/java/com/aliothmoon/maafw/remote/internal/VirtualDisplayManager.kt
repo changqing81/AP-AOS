@@ -48,6 +48,15 @@ object VirtualDisplayManager {
 
     private val state = AtomicInteger(STATE_IDLE)
     private val config = AtomicReference(DisplayConfig())
+
+    /** 请求刷新率；0 = 跟随物理屏。仅在下次建屏时生效 */
+    private val requestedRefreshRate = AtomicReference(0f)
+
+    fun setRefreshRate(rate: Float) {
+        require(rate.isFinite() && rate >= 0f)
+        requestedRefreshRate.set(rate)
+    }
+
     private val displayId = AtomicInteger(DISPLAY_NONE)
     private val virtualDisplay = AtomicReference<VirtualDisplay?>()
 
@@ -135,7 +144,8 @@ object VirtualDisplayManager {
                 cfg.height,
                 cfg.dpi,
                 surface,
-                flags
+                flags,
+                requestedRefreshRate.get()
             )
         virtualDisplay.set(vd)
         val vdId = vd.display.displayId
@@ -147,6 +157,7 @@ object VirtualDisplayManager {
             ", configured=${cfg.width}x${cfg.height}" +
             ", actual=${d.width}x${d.height}" +
             ", rotation=${d.rotation}" +
+            ", requestedRefreshRate=${requestedRefreshRate.get()}, refreshRate=${d.refreshRate}" +
             ", flags=0x${flags.toString(16)}"
         )
 

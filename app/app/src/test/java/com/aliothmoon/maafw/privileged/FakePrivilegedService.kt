@@ -106,6 +106,13 @@ open class FakePrivilegedService : RemoteService {
 
     /** 缓存帧要真 controller 才有；测试里没有可落盘的东西 */
     override fun saveCachedImage(path: String?): Boolean = false
+
+    /** 帧率只影响真建屏，测试里记下最后一次请求即可 */
+    override fun setVirtualDisplayRefreshRate(rate: Float) {
+        requestedRefreshRate = rate
+    }
+
+    var requestedRefreshRate: Float = 0f
 }
 
 /** [service] 为 null 即「特权进程没连上」，收尾路径要走这条 */

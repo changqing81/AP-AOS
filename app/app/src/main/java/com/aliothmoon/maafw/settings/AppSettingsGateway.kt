@@ -26,4 +26,8 @@ interface AppSettingsGateway {
     val themeStyle: StateFlow<ThemeStyle>
     suspend fun setThemeStyle(style: ThemeStyle)
 
+    /** 虚拟屏请求刷新率；0 = 跟随物理屏，仅 Android 14+ 生效 */
+    val virtualDisplayRefreshRate: StateFlow<Float>
+    suspend fun setVirtualDisplayRefreshRate(rate: Float)
+
 }

@@ -1,12 +1,15 @@
 package com.aliothmoon.maafw.service
 
 import android.content.Context
+import android.os.Build
 import android.view.Surface
 import com.aliothmoon.maafw.BuildConfig
 import com.aliothmoon.maafw.MaaDispatchers
+import com.aliothmoon.maafw.constant.AndroidVersions
 import com.aliothmoon.maafw.constant.DefaultDisplayConfig
 import com.aliothmoon.maafw.privileged.PrivilegedServicePort
 import com.aliothmoon.maafw.privileged.PrivilegedServiceState
+import com.aliothmoon.maafw.settings.AppSettingsManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +44,7 @@ class HostState(
     private val context: Context,
     private val servicePort: PrivilegedServicePort,
     private val scope: CoroutineScope,
+    private val appSettings: AppSettingsManager,
 ) {
 
     private val _snapshot = MutableStateFlow(HostSnapshot())
@@ -117,7 +121,14 @@ class HostState(
             }
             runCatching { service.setup(null, null, BuildConfig.DEBUG) }
                 .onFailure { Timber.w(it, "setup failed") }
-            val displayId = runCatching { service.startVirtualDisplay() }
+            // 帧率是同步 .value 读的，必须先等首次读盘落地（否则拿到默认 0 = 跟随物理屏）
+            appSettings.loaded.first { it }
+            val displayId = runCatching {
+                if (Build.VERSION.SDK_INT >= AndroidVersions.API_34_ANDROID_14) {
+                    service.setVirtualDisplayRefreshRate(appSettings.virtualDisplayRefreshRate.value)
+                }
+                service.startVirtualDisplay()
+            }
                 .getOrElse {
                     Timber.e(it, "startVirtualDisplay failed")
                     return@withLock

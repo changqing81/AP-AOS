@@ -56,6 +56,12 @@ class FakeAppSettingsGateway : AppSettingsGateway {
         themeStyle.value = style
     }
 
+    override val virtualDisplayRefreshRate = MutableStateFlow(0f)
+
+    override suspend fun setVirtualDisplayRefreshRate(rate: Float) {
+        virtualDisplayRefreshRate.value = rate
+    }
+
     override val wakeUnlockEnabled = MutableStateFlow(false)
 
     override suspend fun setWakeUnlockEnabled(enabled: Boolean) {
