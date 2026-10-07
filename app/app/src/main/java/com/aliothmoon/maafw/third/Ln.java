@@ -81,7 +81,7 @@ public final class Ln {
             }
             sinkFile = new File(dir, "remote_process_debug.log");
             // sink 自身的启用/换向记录进文件，方便对齐会话边界
-            appendSinkLocked(Level.INFO, "file sink enabled (pid=" + Process.myPid() + ")");
+            appendSinkLocked(Level.INFO, "file sink enabled (pid=" + Process.myPid() + ")", null);
         }
     }
 
