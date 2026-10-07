@@ -15,6 +15,7 @@ import com.aliothmoon.maafw.service.AccessibilityHelperService
 import com.aliothmoon.maafw.remote.internal.PowerController
 import com.aliothmoon.maafw.remote.internal.PrimaryDisplayManager
 import com.aliothmoon.maafw.remote.internal.ScreenManager
+import com.aliothmoon.maafw.remote.internal.SdkTaskRepatriator
 import com.aliothmoon.maafw.constant.PrivilegedGrant
 import com.aliothmoon.maafw.remote.internal.VirtualDisplayManager
 import com.aliothmoon.maafw.remote.internal.WakeUnlockController
@@ -116,6 +117,8 @@ class RemoteServiceImpl : RemoteService.Stub() {
 
     override fun setVirtualDisplayMode(mode: Int): Boolean = when (mode) {
         DisplayMode.PRIMARY -> {
+            // 主屏模式下游戏与 SDK 弹页同屏，搬屏盯防没有意义，停掉
+            SdkTaskRepatriator.stop()
             VirtualDisplayManager.stop()
             virtualDisplayMode.set(mode)
             true
@@ -139,6 +142,8 @@ class RemoteServiceImpl : RemoteService.Stub() {
         DisplayMode.BACKGROUND -> VirtualDisplayManager.start().also { displayId ->
             if (displayId != DefaultDisplayConfig.DISPLAY_NONE) {
                 PowerController.startUserActivityKeepAlive(displayId)
+                // 屏建好了才可能跑自动化，SDK 弹页盯防随之启动
+                SdkTaskRepatriator.start()
             }
         }
 
@@ -147,6 +152,7 @@ class RemoteServiceImpl : RemoteService.Stub() {
 
     override fun stopVirtualDisplay() {
         AppWatchdog.stopWatching()
+        SdkTaskRepatriator.stop()
         when (virtualDisplayMode.get()) {
             DisplayMode.PRIMARY -> PrimaryDisplayManager.stop()
             DisplayMode.BACKGROUND -> {
@@ -296,6 +302,7 @@ class RemoteServiceImpl : RemoteService.Stub() {
      * 它自己按 flag 文件判要不要动手，没改过时是空操作
      */
     private fun cleanup() {
+        step("sdk task repatriator") { SdkTaskRepatriator.stop() }
         step("bridge server") { BridgeServer.stop() }
         step("screen size") { ScreenManager.destroy() }
         step("power") { PowerController.destroy() }

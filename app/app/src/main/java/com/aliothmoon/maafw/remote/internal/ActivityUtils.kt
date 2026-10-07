@@ -32,6 +32,17 @@ object ActivityUtils {
     @Volatile
     var forceFullscreenOnVirtualDisplay: Boolean = false
 
+    /**
+     * 最近一次经桥启动的包名（已拆成纯包名）；[SdkTaskRepatriator] 用它判断
+     * 「自动化会话已开始」并排除游戏本体，虚拟屏停止时由 [SdkTaskRepatriator.stop] 清空
+     *
+     * The most recent package launched through the bridge (flattened to a plain package name);
+     * [SdkTaskRepatriator] uses it to tell "an automation session has started" and to exclude
+     * the game itself, and [SdkTaskRepatriator.stop] clears it when the virtual display stops.
+     */
+    @Volatile
+    var lastLaunchedPackage: String? = null
+
     private val setLaunchWindowingMode by lazy {
         runCatching {
             ActivityOptions::class.java
@@ -125,6 +136,7 @@ object ActivityUtils {
             ServiceManager.getActivityManager().forceStopPackage(targetPackage)
         }
         Ln.i("startApp ${intent.component?.flattenToShortString()}")
+        lastLaunchedPackage = targetPackage
 
         return startActivity(intent, displayId)
     }
@@ -207,6 +219,7 @@ object ActivityUtils {
         val intent = pm.getLaunchIntentForPackage(packageName)
         if (intent != null) {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+            lastLaunchedPackage = packageNameOf(packageName)
             if (startActivity(intent, displayId, forceFullscreen = true)) {
                 SystemClock.sleep(REPIN_SETTLE_MS)
                 if (isAppOnDisplay(packageName, displayId)) {
@@ -242,6 +255,37 @@ object ActivityUtils {
         }
     }
 
+    /**
+     * 全量任务快照（taskId / displayId / 顶层包名）；API < Q 或反射不可用时返回 null。
+     * [SdkTaskRepatriator] 每秒一拍用它做增量比对。
+     *
+     * A snapshot of all running tasks (taskId / displayId / top package); null on API < Q or
+     * when reflection is unavailable. [SdkTaskRepatriator] diffs it tick by tick every second.
+     */
+    @JvmStatic
+    fun snapshotRunningTasks(): List<TaskOnDisplay>? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        if (taskDisplayIdField == null) return null
+        return runCatching {
+            val am = FakeContext.get().getSystemService(ActivityManager::class.java) ?: return null
+            @Suppress("DEPRECATION")
+            am.getRunningTasks(100).map { task ->
+                TaskOnDisplay(
+                    taskId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) task.taskId else task.id,
+                    displayId = getTaskDisplayId(task),
+                    topPackage = task.topActivity?.packageName
+                )
+            }
+        }.onFailure { Ln.w("snapshotRunningTasks: failed", it) }.getOrNull()
+    }
+
+    /** [snapshotRunningTasks] 的单条记录 / One entry of [snapshotRunningTasks] */
+    data class TaskOnDisplay(
+        val taskId: Int,
+        val displayId: Int,
+        val topPackage: String?
+    )
+
     private fun moveAppTaskToDisplay(packageName: String, displayId: Int): Boolean {
         val task = runCatching { findRecentTask(packageName) }.getOrNull() ?: run {
             Ln.w("moveAppTaskToDisplay: no running task of $packageName")
@@ -249,12 +293,25 @@ object ActivityUtils {
         }
         @Suppress("DEPRECATION")
         val taskId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) task.taskId else task.id
+        return moveTaskById(taskId, displayId)
+    }
+
+    /**
+     * 按 taskId 把任务搬到 [displayId]：moveRootTaskToDisplay / moveStackToDisplay
+     * （hidden API，shell 有 MANAGE_ACTIVITY_TASKS），失败再走 am 命令兜底
+     *
+     * Moves the task with [taskId] onto [displayId] via moveRootTaskToDisplay /
+     * moveStackToDisplay (hidden APIs; shell holds MANAGE_ACTIVITY_TASKS), falling back to the
+     * am command.
+     */
+    @JvmStatic
+    fun moveTaskById(taskId: Int, displayId: Int): Boolean {
         moveTaskToDisplayMethod?.let { method ->
             runCatching {
                 method.invoke(activityTaskManager, taskId, displayId)
-                Ln.i("moveAppTaskToDisplay: ${method.name}($taskId, $displayId) invoked")
+                Ln.i("moveTaskById: ${method.name}($taskId, $displayId) invoked")
                 return true
-            }.onFailure { Ln.w("moveAppTaskToDisplay: ${method.name} failed", it) }
+            }.onFailure { Ln.w("moveTaskById: ${method.name} failed", it) }
         }
         return moveTaskViaAmCommand(taskId, displayId)
     }
