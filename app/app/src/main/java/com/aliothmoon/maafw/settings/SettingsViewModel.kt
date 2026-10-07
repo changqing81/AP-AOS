@@ -27,16 +27,19 @@ class SettingsViewModel(
         userConfigurationStore.data,
         appSettings.themeStyle,
         appSettings.autoCleanLogs,
-        appSettings.virtualDisplayRefreshRate,
-        appSettings.keepAliveEnabled,
-    ) { remoteAccess, userConfig, themeStyle, autoCleanLogs, refreshRate, keepAliveEnabled ->
+        // combine 最多接受 5 个 flow（第 6 个会落到 vararg 重载，lambda 变成 Array<Any> 而无法推断类型）；
+        // 末两项先合成 Pair 再参与，保持 5 参重载
+        combine(appSettings.virtualDisplayRefreshRate, appSettings.keepAliveEnabled) { rate, keep ->
+            rate to keep
+        },
+    ) { remoteAccess, userConfig, themeStyle, autoCleanLogs, extras ->
         SettingsUiState(
             remoteAccess = remoteAccess,
             themeMode = userConfig.themeMode,
             themeStyle = themeStyle,
             autoCleanLogs = autoCleanLogs,
-            virtualDisplayRefreshRate = refreshRate,
-            keepAliveEnabled = keepAliveEnabled,
+            virtualDisplayRefreshRate = extras.first,
+            keepAliveEnabled = extras.second,
         )
     }.stateIn(
         scope = viewModelScope,
