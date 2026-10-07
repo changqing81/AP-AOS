@@ -118,6 +118,54 @@
 
 ---
 
+## 3.5 文件级量化差异（2026-10-07 实测）
+
+### 他新增（我们没有）
+
+| 目录/文件 | 数量 | 说明 |
+|---|---|---|
+| `app/app/src` | **212** | App 侧大扩展（包名重构 + 新模块 auth/keepalive/report/update） |
+| `app/build-logic/convention` | 4 | 构建约定插件 |
+| `server/device-report/` | 11 | **Go 服务**（`main.go`/`store.go`/`report.go`/`github.go`/`go.mod` + deploy） |
+| `rootfs/build/build-azurpilot.sh`、`azurpilot-ocr-gate.py` | 2 | 构建脚本 + OCR 门禁 |
+| `rootfs/seeds/seed_azurpilot.py` | 1 | 实例播种 |
+| `rootfs/overlays/android_host.py`、`android_process_compat.py`、`sitecustomize.py` | 3 | rootfs 入口 + 兼容层 |
+| `rootfs/tests/test_android_process_compat.py` | 1 | 单测 |
+| `tools/watch-android-logs.ps1` | 1 | 日志监视工具 |
+| `handoff/latest.md`、`docs/screenshots/*` | 若干 | 账册 + 截图 |
+
+### 他删除（我们还有）
+
+| 目录 | 数量 | 说明 |
+|---|---|---|
+| `app/semi-icons/src` | **596** | **他删掉了 semi-icons** |
+| `app/app/src` | 216 | 包名重构导致的路径变化 |
+| `spike/a-proot-exec`、`spike/e-adb-virtual-display`、`spike/s1-deps` | 100+ | 清理实验产物（对应 `e1cf510 chore: remove tracked spike experiment artifacts`） |
+| `rootfs/patches/module` + `rootfs/patches/assets` | **19** | **他删掉了整个 patches 体系** |
+| `rootfs/models/ocr`、`rootfs/overlays/module`、`rootfs/overlays/models` | 7 | 旧 overlay 资产 |
+
+### 🔑 三条重要结论
+
+1. **`rootfs/patches/` 他删了** —— 与我们 `0e460cd`（桥接接线改为运行时注入）**殊途同归**。
+   → **印证「补丁方式已过时」**，Task #6 前半作废的判断成立。
+2. **`semi-icons` 他删了（596 文件）** —— 他改用别的图标体系。
+   → 我们移植他的 UI 类提交时，**图标引用要适配到 semi-icons**（而不是反向）。
+3. **`server/device-report` 是 Go 服务** —— 独立组件，收编需要 Go 环境。
+
+### 改动最频繁的文件（移植时冲突最集中处）
+
+| 文件 | 改动行数 |
+|---|---|
+| `ui/settings/SettingsScreen.kt` | **1320** |
+| `proot/AzurPilotRepository.kt` | 1140 |
+| `res/values/strings.xml` | 997 |
+| `res/values-en/strings.xml` | 993 |
+| `proot/ProotHost.kt` | **938**（**两边都大改**） |
+
+> `ProotHost.kt` 是两边都重度修改的核心文件 —— 任何涉及它的移植都要特别小心。
+
+---
+
 ## 4. 执行建议
 
 | 方案 | 内容 | 风险 |
