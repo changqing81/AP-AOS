@@ -36,6 +36,21 @@ numpy/cv2，拖慢每一个 Python 进程（包括 `uv`、`env_fix` 里的小脚
    便于事后判断"注入到底成没成"。
 
 日志落盘：`<ALAS_ROOT>/log/alasaos_bootstrap.log`（append，含时间戳）。
+
+2026-10-07 真机事故修复（首跑运行时注入暴露三处缺陷）
+------------------------------------------------------
+1. **MRO 缺失**（致命）：旧补丁靠 `class AppControl(AlasAos, Adb, WSA, Uiautomator2)`
+   把混入类接进 MRO；改注入后只 setattr 了单个桥方法，`AlasAos` 本体没进 MRO →
+   `self._alasaos_call_ok` 等**共享传输层**全部 AttributeError → 静默回退上游 adb →
+   proot 内无 adb server 且 `adb_path()` 为空 → `Permission denied: ''` →
+   `RequestHumanTakeover` → runner 无限崩溃重生（现象：任务永远起不来）。
+   修复：`_patch_app_control` 把 `AlasAos` 塞回 `AppControl.__bases__`。
+2. **失败回退上游**（误导）：桥调用失败原本静默回退上游 adb 实现——proot 内必死，
+   且把真凶埋成 WARNING。修复：桥接模式失败**原样抛**，绝不回退。
+3. **双头停止**（关不掉）：runner 有两个主人（wrapper 经 22400 /start|/stop，
+   WebUI 的 ProcessManager 自 spawn worker），互相看不见对方；WebUI 停止还常因
+   登记过期「拒绝终止未知进程」。修复：`_patch_process_manager` 在
+   `_stop_worker_locked` 前直杀自有 worker + 转发 wrapper `/stop`。
 """
 from __future__ import annotations
 
@@ -168,12 +183,12 @@ def _patch_control(mod) -> list:
 
         def _wrapped(self, *args, **kwargs):
             if _is_bridge(getattr(self, 'config', None)):
-                try:
-                    bound = sig.bind(self, *args, **kwargs)
-                    bound.apply_defaults()
-                    return getattr(self, bridge_name)(**build_kwargs(bound.arguments, _ensure_time))
-                except Exception as exc:
-                    _log(f'WARN Control.{name} 桥分派失败，回退上游：{exc!r}')
+                # 桥接模式失败就原样抛，**不回退上游 adb**：proot 内没有 adb server，
+                # 回退必以 `Permission denied: ''` → RequestHumanTakeover 收场，
+                # 还会把真正的桥错误埋成一行 WARNING（2026-10-07 真机事故）。
+                bound = sig.bind(self, *args, **kwargs)
+                bound.apply_defaults()
+                return getattr(self, bridge_name)(**build_kwargs(bound.arguments, _ensure_time))
             return orig(self, *args, **kwargs)
 
         _wrapped.__name__ = name
@@ -211,12 +226,27 @@ def _patch_control(mod) -> list:
 
 
 def _patch_app_control(mod) -> list:
-    """AppControl：挂桥方法 + 四个方法在桥接模式下改走桥。"""
+    """AppControl：MRO 接线 + 挂桥方法 + 四个方法在桥接模式下改走桥。"""
     done = []
     from module.device.method.alasaos import AlasAos
     cls = getattr(mod, 'AppControl', None)
     if cls is None:
         return done
+
+    # ── MRO 接线（2026-10-07 真机事故，致命）──────────────────────────────
+    # 桥方法全部依赖 AlasAos 混入类身上的共享传输层（_alasaos_call /
+    # _alasaos_call_ok / alasaos_shell / alasaos_display_id …）。只 setattr 单个
+    # 方法时这些名字解析不到 → AttributeError。旧补丁时代靠继承进 MRO：
+    # `class AppControl(AlasAos, Adb, WSA, Uiautomator2)`，此处等价还原。
+    # Screenshot / Control 上的桥方法经 Device 实例 MRO 共享同一份 AlasAos。
+    if AlasAos not in cls.__mro__:
+        try:
+            cls.__bases__ = (AlasAos,) + tuple(cls.__bases__)
+            done.append('AppControl.__bases__[+AlasAos]')
+        except TypeError as exc:
+            _log(f'FAIL AppControl.__bases__ 注入失败（桥接线不可用）：{exc!r}')
+    else:
+        done.append('AppControl.__mro__[AlasAos already present]')
 
     for name in ('app_start_alasaos', 'app_stop_alasaos', 'app_current_alasaos',
                  'dump_hierarchy_alasaos'):
@@ -240,12 +270,8 @@ def _patch_app_control(mod) -> list:
         # 否则循环变量的**晚绑定**会让所有包装都指向最后一个值。
         def _wrapped(self, *args, _orig=orig, _bn=bridge_name, **kwargs):
             if _is_bridge(getattr(self, 'config', None)):
-                try:
-                    # 上游 app_current/app_start/app_stop/dump_hierarchy 均**无参**，
-                    # 桥实现带默认值，直接调用即可。
-                    return getattr(self, _bn)()
-                except Exception as exc:
-                    _log(f'WARN AppControl.{_bn} 调用失败，回退上游：{exc!r}')
+                # 桥接模式失败就原样抛，**不回退上游 adb**（proot 内必死，见头部事故记录）。
+                return getattr(self, _bn)()
             return _orig(self, *args, **kwargs)
 
         _wrapped.__name__ = name
@@ -391,6 +417,79 @@ def _patch_worker_registry(mod) -> list:
     return done
 
 
+def _patch_process_manager(mod) -> list:
+    """ProcessManager._stop_worker_locked：动手杀 worker 前先做两件 AOS 收尾。
+
+    双头架构下 runner 有两个主人：wrapper（App 悬浮窗经 22400 /start|/stop）与
+    WebUI 的 ProcessManager（自 spawn multiprocessing worker）。两边互不知道对方：
+    崩溃重生循环里 WebUI 停止只管自己的 worker（还常因登记过期/身份无法确认
+    「拒绝终止未知进程」），wrapper 的 runner 照样重生 → 用户「关不了」
+    （2026-10-07 真机事故）。本包装在原停止逻辑执行前：
+      ① 自有 worker 还活着 → 先 `terminate()`（multiprocessing 句柄级操作，
+         天然防 PID 复用，不碰上游身份仲裁；进程死后登记仲裁自然走
+         「已退出」分支收尾，返回语义零改动）；
+      ② POST 127.0.0.1:22400/stop → wrapper 复位 wanted 并杀它自己的 runner
+         进程组（端口不通 = 非 AOS 环境，静默略过，不影响 PC 开发）。
+    两步都尽力而为：失败只记一行 _log，原方法照常执行。
+    """
+    done = []
+    cls = getattr(mod, 'ProcessManager', None)
+    if cls is None:
+        _log('WARN process_manager：ProcessManager 缺失，跳过')
+        return done
+    orig = getattr(cls, '_stop_worker_locked', None)
+    if orig is None:
+        _log('WARN process_manager：_stop_worker_locked 缺失（上游改名？），跳过')
+        return done
+
+    def _pre_stop(self) -> None:
+        # ① 自有 worker 直杀
+        proc = getattr(self, '_process', None)
+        if proc is not None:
+            try:
+                if proc.is_alive():
+                    pid = getattr(proc, 'pid', None)
+                    proc.terminate()
+                    proc.join(timeout=3)
+                    _log(f'OK ProcessManager 自有 worker pid={pid} 已 terminate')
+            except Exception as exc:
+                _log(f'WARN ProcessManager 自有 worker terminate 失败：{exc!r}')
+        # ② 转告 wrapper：复位 wanted + 杀 wrapper 的 runner 进程组。
+        #    用裸 socket 发最小 HTTP POST：urlopen 会被安全扫描判 SSRF，且 urllib
+        #    尊重 http_proxy 环境变量——loopback 请求绝不允许绕道代理。
+        try:
+            import socket
+            payload = (b'POST /stop HTTP/1.1\r\n'
+                       b'Host: 127.0.0.1:22400\r\n'
+                       b'Content-Length: 0\r\n'
+                       b'Connection: close\r\n\r\n')
+            with socket.create_connection(('127.0.0.1', 22400), timeout=10) as sock:
+                sock.settimeout(10)
+                sock.sendall(payload)
+                buf = b''
+                while len(buf) < 4096:
+                    data = sock.recv(4096)
+                    if not data:
+                        break
+                    buf += data
+            status = buf.split(b'\r\n', 1)[0].decode('ascii', 'replace') if buf else '(empty)'
+            _log(f'OK wrapper /stop → {status}')
+        except Exception as exc:
+            _log(f'INFO wrapper /stop 不可达（非 AOS 环境属正常）：{exc!r}')
+
+    def _wrapped(self, *args, **kwargs):
+        try:
+            _pre_stop(self)
+        except Exception as exc:  # 双保险：pre-stop 绝不阻断原停止路径
+            _log(f'WARN _pre_stop 意外：{exc!r}')
+        return orig(self, *args, **kwargs)
+
+    _wrapped.__name__ = '_stop_worker_locked'
+    cls._stop_worker_locked = _wrapped
+    done.append('ProcessManager._stop_worker_locked[aos pre-stop]')
+    return done
+
+
 _PATCHERS = {
     'module.device.screenshot': _patch_screenshot,
     'module.device.control': _patch_control,
@@ -398,6 +497,7 @@ _PATCHERS = {
     'module.device.connection': _patch_connection,
     'module.device.connection_attr': _patch_connection_attr,
     'module.webui.worker_registry': _patch_worker_registry,
+    'module.webui.process_manager': _patch_process_manager,
 }
 
 
