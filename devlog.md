@@ -2,6 +2,19 @@
 
 > 倒序排列，最新在上；按发版版本号分段。
 
+### 2026-10-07 · 修复 🔧：真机「任务起不来 + 停不掉」——运行时注入丢 MRO / 桥失败静默回退 / 停止双头不通
+
+- **背景**：用户真机反馈「启动不了，启动了也关不了」，附 launcher + ALAS 双日志包（21:36）。GUI 本身正常（22400 在听），是任务 runner 每活 13~16s 就崩、wrapper 无限重生。
+- **归因一（致命，`0e460cd` 的债）**：桥接接线改运行时注入时只 setattr 了 8 个桥方法，**`AlasAos` 混入类没进 MRO**——旧补丁是 `class AppControl(AlasAos, Adb, WSA, Uiautomator2)`，共享传输层（`_alasaos_call_ok` / `alasaos_shell` / `alasaos_display_id`…）全靠它解析 → 真机日志 `AttributeError: 'Device' object has no attribute '_alasaos_call_ok'`。当时本地桩 20/20 通过是**模拟树自带继承**的自证陷阱（详见 debug.md 同日条目）。
+- **归因二（误导）**：`app_current` 包装器「桥失败回退上游」静默落到 proot 里必死的真 adb（`adb_path()` 为空 → `subprocess.run(['','start-server'])` → `Permission denied: ''` → `RequestHumanTakeover`），把真凶埋成一行 bootstrap WARN。
+- **归因三（关不掉）**：runner 双头（wrapper `_runner_wanted` 重生 vs WebUI ProcessManager 自管 worker），WebUI 停止不经过 wrapper；WebUI 自家 worker 又因登记过期/身份无法确认被保守拒绝杀。两层叠加 → 用户停了也白停。
+- **修复（全部落在 `rootfs/seeds/alasaos_bootstrap.py`，零改上游）**：
+  1. **Fix A**：`_patch_app_control` 把 `AlasAos` 塞回 `AppControl.__bases__`（等价还原旧 MRO；幂等守卫 + TypeError FAIL 日志 + 自检项 `AppControl.__bases__[+AlasAos]`）；
+  2. **Fix B**：AppControl 与 Control 两处包装器，桥接模式失败**原样抛**（ScriptError/RequestHumanTakeover 语义保留），不再回退必死的上游 adb；
+  3. **Fix C**：新增 `_patch_process_manager`（注册 `module.webui.process_manager`），包 `ProcessManager._stop_worker_locked`（`stop`/`stop_by_user` 共同咽喉）做 AOS 预停：自有 worker 先 `terminate()`（句柄级防 PID 复用，登记收尾语义零改动）+ `POST 127.0.0.1:22400/stop` 转告 wrapper（端口不通即非 AOS，静默略过）。
+- **验证**：回归测试入库 `rootfs/seeds/test_bootstrap_fix.py`（真实 alasaos.py 源码按路径加载 + 假上游树 + 假桥代理 22399 裸 JSON 行协议 + 假 wrapper 22400，覆盖 MRO/幂等、桥接端到端、不回退、非桥接、预停三态）——**PASS 20 / FAIL 0，ALL GREEN**。真机验收需 CI 重新出包（rootfs seed 变更，`rootfs.yml` 手动触发）。
+- **临时止损**（等新包期间）：用 App 悬浮窗停止（走 wrapper `/stop`）；最可靠是系统设置里强行停止 App——wrapper 是 App 子进程，App 死则 `_cleanup()` 全量清场。
+
 ### 2026-10-07 · 采纳 🔧：选择性移植上游同源 fork `wess09/AzurPilot-for-Android`（A/B/C 分批）
 
 - **背景**：用户要求「合并上游优质提交」。只读侦察结论见 `docs/upstream-wess09-fork-diff.md`：两仓**共享完整历史**（共同祖先 `adc9f19`，2026-09-21 v0.1.4 收官），他独有 111 条有效提交、我们独有 42 条，**双向大分叉**；他做过 App 侧包名重构（`com.azurpilot.ghio` vs 本仓 `com.aliothmoon.maafw`）→ **不能 cherry-pick，只能按文件对位手工改写**。

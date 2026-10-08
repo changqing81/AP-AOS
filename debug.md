@@ -31,6 +31,20 @@
 | **`screencap -d` 与 `input -d` 的 display id 是两个命名空间** | 本仓走桥（TCP 22300），不走 adb 通道 |
 | **Shizuku 未授权时直接 bind 只静默失败**，启动按钮必须走权限入口 | ⚠️ 本仓 `RootRemoteServiceConnector` 行为需核对 |
 
+## [2026-10-07] 桥接接线改运行时注入后丢了 MRO：`_alasaos_call_ok` AttributeError → 静默回退上游 → `Permission denied: ''` 崩溃重生（首跑真机才暴露）
+
+- **现象**（真机 2026-10-07 21:33 日志）：任务 runner 每次活 13~16s 就退，wrapper 按退避无限重生。`wrapper_runner_error.txt` 里只有 `RequestHumanTakeover`；真凶在 `2026-10-07_alas.txt` 前段：`AttributeError: 'Device' object has no attribute '_alasaos_call_ok'`（screenshot_alasaos 一进来就炸），以及 `app_current` 的 `[Errno 13] Permission denied: ''`——`adbutils._safe_connect` 执行 `subprocess.run([adb_path(), "start-server"])`，而桥接模式下 `adb_binary` 被 connection_attr 补丁钉成 **空串**。
+- **根本原因**：`0e460cd`（09-25）把桥接接线从 patch 改为运行时注入时，**只 setattr 了单个桥方法**（`screenshot_alasaos` / `click_alasaos` / `app_current_alasaos` 等 8 个），而旧补丁的接线是 **`class AppControl(AlasAos, Adb, WSA, Uiautomator2)`** —— `AlasAos` 混入类靠继承进 MRO，共享传输层（`_alasaos_call` / `_alasaos_call_ok` / `alasaos_shell` / `alasaos_display_id` …）全靠它解析。注入版 `AlasAos` 没进 MRO → 所有桥方法一调就 AttributeError → `app_current` 包装器还有「桥失败回退上游」的逻辑，静默回退到 proot 里必然不存在的 adb → 崩溃循环。
+- **为什么当时没发现**：`0e460cd` 本地验证「20/20 通过」的模拟树**自带了 AlasAos 继承关系**，与真实上游树不一致——验证桩复刻了被测补丁想要的结果，属于**自证陷阱**。运行时注入类改动，桩测试必须从「上游原版类定义」出发搭建。
+- **解决方案（已执行，本文件同日修复）**：`rootfs/seeds/alasaos_bootstrap.py` 的 `_patch_app_control` 把 `AlasAos` 塞回 `AppControl.__bases__`（幂等守卫 `AlasAos not in cls.__mro__`，TypeError 有 FAIL 日志）；自检 done 列表新增 `AppControl.__bases__[+AlasAos]`，事后 grep `alasaos_bootstrap.log` 可确认。
+
+## [2026-10-07] runner 有两个主人（wrapper /start|/stop vs WebUI ProcessManager），崩溃重生循环里「关不掉」
+
+- **现象**：WebUI 点停止反复刷 `worker PID 5941 身份无法确认，拒绝终止未知进程` / `停止工作进程失败`，而 wrapper 的 supervisor 照样把 runner 一个个重生（session.log `respawned pid=6010/6315/9243…`）。用户视角：任务永远在跑。
+- **根本原因**（两层叠加）：① wrapper 的 runner 由 `/start` 置 `_runner_wanted`，监管循环在 wanted 期间对死亡无条件重拉——WebUI 的停止**不经过** wrapper，wrapper 根本不知道用户停过（`wrapper.py` 头注里「双头问题留阶段四决策」说的就是它）；② WebUI 侧 `ProcessManager._stop_worker_locked` 有持久化登记 + 身份校验，worker 崩死后登记被清、重生的新 PID 又不在登记里，加上 Android 读不到 /proc、`process_matches` 降级为「无法确认」→ 保守拒绝杀任何 PID。
+- **解决方案（已执行，本文件同日修复）**：注入 `ProcessManager._stop_worker_locked`（`stop`/`stop_by_user` 的共同咽喉）加 AOS 预停：① 自有 worker（`self._process`）还活着就先 `terminate()`——multiprocessing 句柄级操作防 PID 复用，不碰上游身份仲裁，登记收尾语义零改动；② `POST 127.0.0.1:22400/stop` 转告 wrapper（复位 wanted + 杀进程组；端口不通 = 非 AOS 环境，静默略过不影响 PC 开发）。
+- **教训**：给「有自主重生逻辑的进程」做停止功能，必须让**所有停止入口都汇到重生者的 wanted 标志**上，否则杀得再干净也会复活。
+
 ## [2026-10-07] 移植上游 `AndroidManifest.xml` 漏声明 = 静默失效 + 设置页谎报「已激活」（CI 全绿也发现不了）
 
 - **现象**：采纳上游 `e6337cf`（keepalive）的提交 `b6354fe` 里，`AndroidManifest.xml` 只声明了 5 个 keepalive 组件，漏了 `KeepAliveLocalService` 与 `KeepAliveDaemonService`（后者还带 `android:process=":daemon"`）。**CI 完全绿**——编译、打包、装包都没问题。
