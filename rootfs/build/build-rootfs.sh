@@ -558,18 +558,39 @@ fi
 chroot_run /bin/bash -c "cd $GUEST_ALAS_ROOT && $GUEST_PYTHON seeds/regen_args.py" \
   || { echo "::error::regen_args.py 失败（上游 config_updater 生成链或 args.json 结构已变）"; exit 1; }
 # 校验 alasaos 桥选项确实进了 args.json —— 这是「控制台能选到桥」的硬条件
+# 挂载位兼容（与 seeds/regen_args.py 的 ALASAOS_OPTION_PATHS 同步）：
+#   2026-11 重构：args['EmulatorSettings']['Emulator'][key]
+#   2026-09 基线：args['Alas']['Emulator'][key]
 chroot_run "$GUEST_PYTHON" - <<'PY'
 import json
 p = '/opt/alas/module/config/argument/args.json'
 d = json.load(open(p, encoding='utf-8'))
+
+CANDIDATES = [
+    (('EmulatorSettings', 'Emulator', 'ScreenshotMethod'), ('Alas', 'Emulator', 'ScreenshotMethod')),
+    (('EmulatorSettings', 'Emulator', 'ControlMethod'), ('Alas', 'Emulator', 'ControlMethod')),
+]
 bad = []
-for task, group, arg in (('Alas', 'Emulator', 'ScreenshotMethod'),
-                         ('Alas', 'Emulator', 'ControlMethod')):
-    opts = d.get(task, {}).get(group, {}).get(arg, {}).get('option')
+for paths in CANDIDATES:
+    opts = None
+    hit = None
+    for path in paths:
+        cur = d
+        ok_path = True
+        for key in path[:-1]:
+            if not isinstance(cur, dict):
+                ok_path = False
+                break
+            cur = cur.get(key)
+        if ok_path and isinstance(cur, dict) and path[-1] in cur:
+            opts = cur[path[-1]].get('option')
+            hit = path
+            break
     ok = isinstance(opts, list) and 'alasaos' in opts
-    print(f'  {"OK  " if ok else "FAIL"} {task}.{group}.{arg} option 含 alasaos = {ok}')
+    label = '.'.join(hit) if hit else '.'.join(paths[0])
+    print(f'  {"OK  " if ok else "FAIL"} {label} option 含 alasaos = {ok}')
     if not ok:
-        bad.append(f'{task}.{group}.{arg}')
+        bad.append(label)
 if bad:
     print('::error::args.json 缺少 alasaos 选项:', bad)
     raise SystemExit(1)
