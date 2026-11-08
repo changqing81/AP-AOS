@@ -256,5 +256,6 @@ class RootfsProvisioner(
         const val MIN_FREE_BYTES = 2L * 1024 * 1024 * 1024
         const val BUFFER_SIZE = 256 * 1024
         val VERSION_KEY = Regex(""""rootfs_version"\s*:\s*"([^"]+)"""")
+        val BUILD_TIME_KEY = Regex(""""build_time_utc"\s*:\s*"([^"]+)"""")
     }
 }
