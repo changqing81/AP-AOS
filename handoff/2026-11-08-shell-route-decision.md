@@ -24,6 +24,23 @@
 3. push 后 CI 手动触发 rootfs（勾 build_apk）出新 APK；
 4. 真机验收：部署设置页 Repository 应显示 `auto`（或重定向后的实际值）；挂机页各任务可见 = 你的功能已上机。
 
+## 兼容性审计（同日追加）：注入锚点 vs 你的 master@92c81dc
+
+距上次构建（10-08）你的 master 变了 30+ 提交。AP-AOS 的运行时注入（alasaos_bootstrap.py）全部锚点逐一实证（本机检出 dev=master=92c81dc，含运行时 import 实证）：
+
+| 注入点 | 锚点 | 结果 |
+|---|---|---|
+| Screenshot | class Screenshot + def screenshot_methods | ✓ |
+| Control | class Control + def click_methods | ✓ |
+| AppControl | class AppControl（__bases__ 混入） | ✓ |
+| Connection | class Connection + set_server（import 可达，运行时实证 True） | ✓ |
+| ConnectionAttr | class ConnectionAttr + adb_binary | ✓ |
+| worker_registry | _process_created_at + process_matches | ✓ |
+| process_manager | _stop_worker_locked | ✓ |
+| decorator | class cached_property | ✓ |
+
+**结论：8/8 全部健在，下个 CI 包可安全烘 master@92c81dc。** 注意两点：① ConnectionAttr 拆在独立文件 connection_attr.py，bootstrap 的 PATCHERS 本就分开注入，无耦合；② set_server 是 from module.config.server import 进 connection.py 命名空间的，getattr 运行时实证可取，None 保护仍在。
+
 ## 注意事项
 
 - wess09/AzurPilot-for-Android 的原生 DeploySettingsPage 与 DEPLOY_GROUPS 只是「他的架构」的事实，不要试图往你的仓库塞 module/api——除非将来重新拍板走原生 UI 路线。
