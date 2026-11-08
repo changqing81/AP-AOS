@@ -22,6 +22,7 @@ import com.aliothmoon.maafw.overlay.screensaver.ScreenSaverOverlayManager
 import com.aliothmoon.maafw.privileged.PermissionManager
 import com.aliothmoon.maafw.privileged.RemoteServiceManager
 import com.aliothmoon.maafw.proot.AlasRunController
+import com.aliothmoon.maafw.service.AppForegroundTracker
 import com.aliothmoon.maafw.service.HostState
 import com.aliothmoon.maafw.settings.AppSettingsManager
 import kotlinx.coroutines.CoroutineScope
@@ -84,6 +85,7 @@ class MaaFwApp : Application() {
     }
 
     fun postCreate(koin: Koin) {
+        AppForegroundTracker.attach()
         koin.get<PermissionManager>()
         val provider = koin.get<AppSettingsManager>().startupBackend::value
         RemoteServiceManager.initialize(this, provider)

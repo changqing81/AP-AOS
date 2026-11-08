@@ -2,14 +2,16 @@ package com.aliothmoon.maafw.proot
 
 import android.content.Context
 import com.aliothmoon.maafw.MaaDispatchers
+import com.aliothmoon.maafw.service.AppForegroundTracker
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import timber.log.Timber
 import java.net.HttpURLConnection
@@ -83,7 +85,12 @@ class AlasRunController(
         scope.launch(MaaDispatchers.IO) {
             while (true) {
                 refreshMutex.withLock { refreshLocked() }
-                delay(POLL_MS)
+                // 没在跑任何任务且 App 在后台：纯空转，退避到 30s；其余场景维持 4s
+                // （采纳自 Shinarin/ALAS-AOS f6eb30f9）
+                val s = _state.value
+                val idle = !s.runnerAlive && !s.toolAlive
+                val interval = if (idle && !AppForegroundTracker.foreground.value) IDLE_POLL_MS else POLL_MS
+                withTimeoutOrNull(interval) { AppForegroundTracker.poke.first() }
             }
         }
     }
@@ -186,6 +193,7 @@ class AlasRunController(
     private companion object {
         const val BASE = "http://127.0.0.1:${ProotHost.WRAPPER_PORT}"
         const val POLL_MS = 4_000L
+        const val IDLE_POLL_MS = 30_000L
         const val HTTP_TIMEOUT_MS = 1_500
         const val POST_READ_TIMEOUT_MS = 12_000
         const val LOG_TAIL = 80

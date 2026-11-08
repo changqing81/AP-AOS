@@ -11,7 +11,6 @@ import com.aliothmoon.maafw.privileged.PrivilegedServicePort
 import com.aliothmoon.maafw.privileged.PrivilegedServiceState
 import com.aliothmoon.maafw.settings.AppSettingsManager
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import timber.log.Timber
 import java.io.BufferedInputStream
@@ -73,7 +73,15 @@ class HostState(
         scope.launch(MaaDispatchers.IO) {
             while (true) {
                 probeBridgeNow()
-                delay(BRIDGE_PROBE_INTERVAL_MS)
+                // 环境没起且 App 在后台：纯空转，退避到 30s；其余场景维持 4s
+                // （采纳自 Shinarin/ALAS-AOS f6eb30f9）
+                val idle = _snapshot.value.vdDisplayId == DefaultDisplayConfig.DISPLAY_NONE
+                val interval = if (idle && !AppForegroundTracker.foreground.value) {
+                    BRIDGE_PROBE_IDLE_INTERVAL_MS
+                } else {
+                    BRIDGE_PROBE_INTERVAL_MS
+                }
+                withTimeoutOrNull(interval) { AppForegroundTracker.poke.first() }
             }
         }
     }
@@ -223,6 +231,7 @@ class HostState(
         const val BRIDGE_HOST = "127.0.0.1"
         const val BRIDGE_PORT = 22300
         const val BRIDGE_PROBE_INTERVAL_MS = 4_000L
+        const val BRIDGE_PROBE_IDLE_INTERVAL_MS = 30_000L
         const val BRIDGE_FAIL_THRESHOLD = 2
         const val BRIDGE_CONNECT_TIMEOUT_MS = 1_500
         const val BRIDGE_READ_TIMEOUT_MS = 2_000
