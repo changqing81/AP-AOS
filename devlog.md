@@ -2,6 +2,20 @@
 
 > 倒序排列，最新在上；按发版版本号分段。
 
+### 2026-11-08 · 侦察+决策 📋：安卓壳路线拍板（维持 AP-AOS 壳）+ Repository 改 auto 走国内自动分流
+
+- **背景**：用户目标「AP-AOS 内部源换成 changqing81/Azurpilot-Auto 并支持国内镜像，功能保持不变」；发来 wess09 App 的「部署设置」截图问为何看不到自己仓库的独特功能。
+- **侦察结论**（证据链）：
+  1. 截图页 = wess09/AzurPilot-for-Android 原生 DeploySettingsPage，显示值与他的出厂种子 deploy-azurpilot.yaml（wess09/AzurPilot、dev、pypi.org）逐字段吻合——**那是他的运行时，不是 AP-AOS 的包**；
+  2. 该页面数据驱动：App 调 settings.get 网关，字段组由 Python 侧 DEPLOY_GROUPS 下发（wess09 主仓 module/runtime/deploy_settings.py:49）；
+  3. **wess09 原生 UI 绑死 module/api/ FastAPI WebSocket 网关（31 文件）**，该层在 changqing81/Azurpilot-Auto dev/master 均不存在（GitHub API 404 实测）→ 把你的源烘进他的壳，原生 UI 全死；
+  4. 用户仓库的全部独特功能（SkipRepositoryUpdate / HideUpdateNotice / HideAnnouncement / 透明主题 / 委托统计 / 岛屿规划器 / 心智计算器…）都在 PyWebIO WebUI——AP-AOS 的 WebView 壳恰好完整显示。
+- **用户拍板**：①维持 AP-AOS 壳（WebView + PyWebIO），放弃 wess09 原生 UI 路线；②seed 的 Repository 改 auto。
+- **改动**（1 文件）：rootfs/seeds/deploy-azurpilot.yaml Repository 钉死 URL → auto，注释第 5 条同步重写（地区分流语义：CN→gitcode gcw_BYvq9jGu/AzurPilot，其余→GitHub changqing81/Azurpilot-Auto，检测失败回落 GitHub）。
+- **验证**（本机 AzurPilot venv 全链路，config_redirect 真实逻辑 + monkeypatch 地区）：CN→gitcode ✓ / 海外→GitHub ✓ / 检测失败→GitHub ✓ / 具体 URL 原样保留 ✓，ALL PASS。
+- **现状确认**：内部源早已烘 changqing81/Azurpilot-Auto.git@master（build-rootfs.sh:56，钉最新 commit）；gitcode 镜像 dev=master=92c81dc 与 GitHub 同步（ls-remote 实测）；运行时更新源已指 gitcode（build-rootfs.sh:79）。
+- **待办**：commit + push（等用户点头）→ CI 手动触发 rootfs（勾 build_apk）→ 真机验收。
+
 ### 2026-10-07 · 修复 🔧：真机「任务起不来 + 停不掉」——运行时注入丢 MRO / 桥失败静默回退 / 停止双头不通
 
 - **背景**：用户真机反馈「启动不了，启动了也关不了」，附 launcher + ALAS 双日志包（21:36）。GUI 本身正常（22400 在听），是任务 runner 每活 13~16s 就崩、wrapper 无限重生。
