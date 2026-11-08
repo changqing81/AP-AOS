@@ -2,6 +2,17 @@
 
 > 倒序排列，最新在上；按发版版本号分段。
 
+### 2026-11-08 · 打包 📦：首个「你的源」APK 出包全绿 + 两上游线侦察收官
+
+- **出包链路**：push e5eadcc（seed auto）后连爆两个真 bug，当日修复闭环：
+  1. run 42479355239 ❌ `seed_config.py KeyError: 'Emulator'`——**你的 master 把模拟器参数挂载位从 Alas.Emulator 重构到 EmulatorSettings.Emulator**（task.yaml：参数名不变挂载位变），我方 seed 锚死旧位 → **402f748**：regen_args + seed_config 改候选路径（新优先旧兜底），本机 venv 端到端验证种子五项全写进新位；
+  2. run 42479793006 ❌ 门禁 BRIDGE_OPTION 仍查旧位 → **49c891c**：门禁同步候选路径，bash -n 校验；
+  3. run 42480393356 ✅ 全绿：**apk-debug 688.4MB**（你的 master@92c81dc + auto 分流 + 兼容修复），11-22 过期。
+- **注入锚点审计**：8/8 健在（Screenshot/Control/AppControl/Connection/ConnectionAttr/worker_registry/process_manager/cached_property，含运行时 import 实证）。
+- **上游侦察**（docs/upstream-recon-2026-11-08.md）：
+  - wess09 线（113 条有效）：**无可移植净收益**——rootfs 演进全绑新架构+他的壳；NTP/口令保留/升级保留三项本地已等价解决（逐项实证）；
+  - Shinarin/ALAS-AOS 线（27 条，同包名同构兄弟仓）：**9be72778 镜像切换 UI+进度旁路 / f6eb30f9 WebView 省电 / 3e8d7ee9 wrapper O(1) / 9a756584 Shizuku 引导**四条候选待用户拍板。
+
 ### 2026-11-08 · 侦察+决策 📋：安卓壳路线拍板（维持 AP-AOS 壳）+ Repository 改 auto 走国内自动分流
 
 - **背景**：用户目标「AP-AOS 内部源换成 changqing81/Azurpilot-Auto 并支持国内镜像，功能保持不变」；发来 wess09 App 的「部署设置」截图问为何看不到自己仓库的独特功能。
