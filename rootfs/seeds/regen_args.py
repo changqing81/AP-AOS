@@ -26,9 +26,18 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # seeds/ 的
 ARGS_JSON = os.path.join(BASE, 'module', 'config', 'argument', 'args.json')
 I18N_ZH = os.path.join(BASE, 'module', 'config', 'i18n', 'zh-CN.json')
 
-ALASAOS_OPTION_ARGS = [
-    ('Alas', 'Emulator', 'ScreenshotMethod'),
-    ('Alas', 'Emulator', 'ControlMethod'),
+# args.json 里截图/控制两键的候选挂载路径（按序命中第一个）：
+#   2026-09 烘焙基线：args['Alas']['Emulator'][key]
+#   2026-11 挂载重构：args['EmulatorSettings']['Emulator'][key]
+#   （task.yaml 注释明说「参数名不变、挂载位置变了」；option 键结构不变）
+# i18n 键单独列（两代 i18n 顶层都是组名 Emulator，见 I18N_KEYS）。
+ALASAOS_OPTION_PATHS = [
+    (('EmulatorSettings', 'Emulator', 'ScreenshotMethod'), ('Alas', 'Emulator', 'ScreenshotMethod')),
+    (('EmulatorSettings', 'Emulator', 'ControlMethod'), ('Alas', 'Emulator', 'ControlMethod')),
+]
+I18N_KEYS = [
+    ('Emulator', 'ScreenshotMethod'),
+    ('Emulator', 'ControlMethod'),
 ]
 ALASAOS_DISPLAY = 'ALAS-AOS 桥'
 GENERATE_TIMEOUT_SEC = 600
@@ -65,18 +74,30 @@ def main():
     for line in out.strip().splitlines()[-3:]:
         print(f'regen_args| {line}', flush=True)
 
-    # 2) args.json 补 alasaos 选项
+    # 2) args.json 补 alasaos 选项（候选路径按序命中第一个：新挂载优先，旧挂载兜底）
     args = _load_json(ARGS_JSON)
     patched = []
-    for task, group, arg in ALASAOS_OPTION_ARGS:
-        node = args.get(task, {}).get(group, {}).get(arg)
-        if not isinstance(node, dict):
-            print(f'regen_args: WARN {task}.{group}.{arg} missing in args.json', flush=True)
+    for arg_paths in ALASAOS_OPTION_PATHS:
+        node = None
+        hit = None
+        for path in arg_paths:
+            cur = args
+            for key in path:
+                if not isinstance(cur, dict):
+                    cur = None
+                    break
+                cur = cur.get(key)
+            if isinstance(cur, dict):
+                node = cur
+                hit = path
+                break
+        if node is None:
+            print(f'regen_args: WARN alasaos anchor missing in args.json (tried {ALASAOS_OPTION_PATHS})', flush=True)
             continue
         opts = node.get('option')
         if isinstance(opts, list) and 'alasaos' not in opts:
             opts.append('alasaos')
-            patched.append(f'{task}.{group}.{arg}')
+            patched.append('.'.join(hit))
     if patched:
         _dump_json(ARGS_JSON, args)
 
@@ -86,7 +107,7 @@ def main():
     i18n_patched = False
     try:
         zh = _load_json(I18N_ZH)
-        for task, group, arg in ALASAOS_OPTION_ARGS:
+        for group, arg in I18N_KEYS:
             node = zh.get(group, {}).get(arg)
             if isinstance(node, dict) and node.get('alasaos') != ALASAOS_DISPLAY:
                 node['alasaos'] = ALASAOS_DISPLAY
