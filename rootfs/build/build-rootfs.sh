@@ -82,7 +82,11 @@ UPSTREAM_REF="${UPSTREAM_REF:-${ALAS_REF:-$_default_ref}}"
 # 国内本地复现构建时可 export UPSTREAM_REPO=<可达镜像>；runtime 更新镜像由 deploy.yaml 管。
 
 PYTHON_VERSION="${PYTHON_VERSION:-3.14.6}"
-ROOTFS_VERSION="${ROOTFS_VERSION:-0.2.0}"
+# ★ 0.3.0（2026-11-08）：rootfs 内容自 0.2.0 起已多次实质变化（换上游 Azurpilot-Auto、
+#   Emulator 挂载重构兼容、auto 分流 seed），但版本号未随动 → 设备侧 RootfsProvisioner
+#   以「版本相同」跳过解压，升级包用不上新 rootfs（真机实证：桥选项缺失 + runner 崩溃循环）。
+#   此后每次 rootfs 内容实质变化都必须递增此版本号。
+ROOTFS_VERSION="${ROOTFS_VERSION:-0.3.0}"
 TRIM_LEVEL="${TRIM_LEVEL:-conservative}"
 # base 保持 24.04.5（**不升 26.04**，理由见文件头 2）。sha256 取自官方 SHA256SUMS；
 # 置空 UBUNTU_BASE_SHA256 可跳过校验（仅用于本地试验，CI 上不要关）。

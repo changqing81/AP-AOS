@@ -14,8 +14,11 @@ import timber.log.Timber
  * 服务因内存压力被杀后，系统在资源允许时以 null intent 自动重建本服务，带动宿主
  * 进程复活。
  *
- * 生命周期全程自检：onCreate 与 onStartCommand 都会调
- * [KeepAliveManager.onKeepAlivePing]，重建后立即修复其余保活子系统。
+ * 自检只在 onCreate 做一次：[KeepAliveManager.onKeepAlivePing] 内部会重新
+ * startService 本服务，若 onStartCommand 也回调它便形成自我触发环路
+ * （「startService → onStartCommand → startService」，主线程被灌满 → 全局卡顿/ANR），
+ * 因此 onStartCommand 只返回 START_STICKY，进程重建后的自愈由 onCreate 承担。
+ * 修复来源：上游同源 fork wess09/AzurPilot-for-Android 1b184f1（2026-10-10），对位改写。
  *
  * Sticky background daemon service.
  *
@@ -41,7 +44,10 @@ class KeepAliveStickyService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Timber.d("KeepAliveStickyService: onStartCommand flags=$flags startId=$startId")
-        KeepAliveManager.getInstance()?.onKeepAlivePing()
+        // 这里刻意不再回调 onKeepAlivePing()：该方法内部会重新 startService 本服务，
+        // 形成「startService → onStartCommand → startService」的自我触发环路，
+        // 主线程被持续占满（真机实证：2 分 27 秒内 onStartCommand 11963 次 ≈ 每秒 81 次，
+        // 全局 UI 卡顿）。进程被系统重建时的自愈已由 onCreate() 承担，无需重复触发。
         return START_STICKY
     }
 

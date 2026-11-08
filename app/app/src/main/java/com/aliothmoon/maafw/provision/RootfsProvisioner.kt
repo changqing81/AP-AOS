@@ -85,7 +85,7 @@ class RootfsProvisioner(
                 _state.value = ProvisionState.NotBundled
                 return@withContext
             }
-            if (isInstalled(bundled)) {
+            if (isInstalled()) {
                 Timber.i("rootfs $bundled already provisioned")
                 _state.value = ProvisionState.Ready
                 return@withContext
@@ -103,7 +103,7 @@ class RootfsProvisioner(
             // 解完 sanity：解释器在且可执行，版本以镜像内清单为准
             val python = File(rootDir, PYTHON_REL)
             check(python.isFile && python.canExecute()) { "$PYTHON_REL missing or not executable" }
-            val installed = readExtractedVersion() ?: bundled
+            val installed = provisionFingerprint(readExtractedManifest()) ?: bundled
             markerFile.writeText(installed)
             Timber.i("rootfs $installed provisioned")
             _state.value = ProvisionState.Ready
@@ -116,8 +116,8 @@ class RootfsProvisioner(
         }
     }
 
-    private fun isInstalled(bundled: String): Boolean =
-        installedVersion() == bundled &&
+    private fun isInstalled(): Boolean =
+        installedVersion() == provisionFingerprint(app.assets.open(ASSET_MANIFEST).bufferedReader().use { it.readText() }) &&
                 File(rootDir, PYTHON_REL).let { it.isFile && it.canExecute() }
 
     /** 内置包版本；资产缺任一件都视为未内置 */
@@ -127,9 +127,16 @@ class RootfsProvisioner(
         if (version != null) app.assets.open(ASSET_ARCHIVE).use { }
     }
 
-    private fun readExtractedVersion(): String? = runCatching {
-        parseVersion(File(rootDir, MANIFEST_REL).readText())
+    /** 内置/已装清单 → 「version|build_time」指纹；build_time 每次构建必变，防 rootfs_version 忘递增时跳过解压 */
+    private fun provisionFingerprint(manifestJson: String): String? = runCatching {
+        val v = VERSION_KEY.find(manifestJson)?.groupValues?.get(1) ?: return null
+        val bt = BUILD_TIME_KEY.find(manifestJson)?.groupValues?.get(1) ?: "-"
+        "$v|$bt"
     }.getOrNull()
+
+    private fun readExtractedManifest(): String = runCatching {
+        File(rootDir, MANIFEST_REL).readText()
+    }.getOrDefault("")
 
     private fun parseVersion(manifestJson: String): String? =
         VERSION_KEY.find(manifestJson)?.groupValues?.get(1)
