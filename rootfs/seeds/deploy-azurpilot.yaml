@@ -14,12 +14,14 @@
 #   3) Ocr 段模板默认 OcrClientAddress 是 127.0.0.1:22268（ALAS 时代我方是 :22300）。
 #   4) Webui 模板默认端口 **25548**（不是 22267）→ 必须钉回 22267，App 侧 WebView
 #      与探针都按 22267 写的。
-#   5) Git.Repository 的 'auto' 会按地区选源（CN→gitcode，其他→GitHub）；
-#      **写具体 URL 则永不被改写**（模板注释明示）。这里写具体 URL。
+#   5) Git.Repository 填 'auto'：deploy/config.py 的 _redirect_github_repository()
+#      会按网络地区自动选源（CN→gitcode 镜像 gcw_BYvq9jGu/AzurPilot，其余→GitHub
+#      changqing81/Azurpilot-Auto），检测结果不写回配置，换网后下次启动自动重判。
+#      运行期实际不拉 git（.git 已删、更新全关），此值主要影响 WebUI 部署设置页的显示
+#      与未来放开更新时的行为——auto 语义比钉死 URL 干净。
 Deploy:
   Git:
-    # 具体 URL = 锁定，config_redirect() 不会改写它
-    Repository: https://github.com/changqing81/Azurpilot-Auto
+    Repository: auto
     Branch: master
     # 模板默认是 ./.venv/bin/git（venv 里没有 git）；用 apt 装的系统 git
     GitExecutable: /usr/bin/git
