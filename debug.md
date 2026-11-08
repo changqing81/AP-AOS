@@ -4,6 +4,22 @@
 > **历史坑点（m0 阶段，全真机实证）见 `m0-archive/docs/debug.md` 与 `m0-archive/docs/devlog/`。** 高频索引：
 > WebView `vh` 塌缩（注入 innerHeight 修复）｜幻影进程查杀（`max_phantom_processes` / `settings_enable_monitor_phantom_procs`）｜mDNS `_adb-tls-connect` 端口过期但广播残留｜MaaFW PP-OCR 对 2D 单通道静默返空（堆叠 3ch）｜MaaFW 截图 BGR↔ALAS RGB 翻转｜RUN_COMMAND 权限只授清单声明方｜`am force-stop` 杀不掉 shell uid 残留（须显式 kill）｜桥 30s 无流量判死（10s 心跳）。
 
+## 2026-11-08 · 真机双症：rootfs_version 恒定致升级包不生效 + keepalive 自环拖死主线程
+
+### 坑 A：升级包跳过解压（极易忽视，真机实锤）
+
+- **现象**：新 APK 装上后模拟器设置页下拉没有 alasaos 桥选项；runner 崩溃循环（adb 空路径 Permission denied → RequestHumanTakeover → code=1 无限重拉）。
+- **根因**：`rootfs/build/build-rootfs.sh` 的 `ROOTFS_VERSION` 自 2026-09-24 起恒 0.2.0；`RootfsProvisioner` 以 marker == rootfs_version 判「已装」→ **升级包跳过 770MB 解压，设备一直用旧 rootfs**。旧 rootfs 里的 regen_args 锚旧挂载位（Alas.Emulator）→ 选项补挂失败。
+- **解决**：①版本递增 0.3.0（commit c5403e4）；②Provisioner 升级判定改「version|build_time」复合指纹（build_time_utc 每次构建必变，忘递增版本号也能触发重解压）。
+- **教训**：**凡 rootfs 内容实质变化（换上游/改 seed/改结构），必须递增 ROOTFS_VERSION**；指纹兜底已内建，但递增仍是第一纪律。
+
+### 坑 B：keepalive 自我触发死循环（上游踩过同款坑，我们采纳时未跟其修复）
+
+- **现象**：全局 UI 卡顿；app.log 2 分 27 秒内 `KeepAliveStickyService.onStartCommand` 打了 **11963 条（≈81 次/秒）**，主线程被 startService 洪水灌满。
+- **根因**：StickyService.onStartCommand 回调 onKeepAlivePing()，ping 内部 startService 本服务 →「startService → onStartCommand → startService」自环；双向看门狗的 bindService 在环里无去重，连接无限累积。
+- **解决**：采纳上游同源 fork wess09/AzurPilot-for-Android **1b184f1**（2026-10-10）对位改写：Sticky.onStartCommand 去 ping（自愈由 onCreate 承担）；Local/Daemon 加 `@Volatile bound` 去重 + `releaseBinding()`。
+- **教训**：**采纳上游功能要连他后续 bugfix 一起跟**——他 10-07 出 keepalive 我们当天采纳，他 10-10 修自环我们没跟，同款 bug 一个月后在真机复现。
+
 ## 📌 来自 `wess09/AzurPilot-for-Android` 的坑点速查（同源平行分支，2026-09-25 核查）
 
 > 该仓库与本仓**同源**（描述即「AzurPilot 安卓版本 基于ALAS-AOS」），提交者 `Elysia` 与本仓历史提交

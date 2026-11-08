@@ -2,6 +2,17 @@
 
 > 倒序排列，最新在上；按发版版本号分段。
 
+### 2026-11-08 深夜 · 修复 🚑：真机双症——保活自环拖死 UI + rootfs 升级包不生效（下拉无桥选项）
+
+- **背景**：用户装上首个绿包（49c891c）真机使用，报两症：①UI 严重卡顿带全部界面；②模拟器设置页截图/控制下拉没有「ALAS-AOS 桥」选项，runner 崩溃循环。随附三份日志包（launcher/alas）。
+- **归因①（卡顿）**：app.log 实证 21:39-21:41 的 2 分 27 秒内 `KeepAliveStickyService.onStartCommand` 打点 **11963 次（≈81 次/秒）**——`onStartCommand` 回调 `onKeepAlivePing()` → ping 内部 `startService` 本服务 → 自我触发环路，主线程灌满。**上游同源 fork 10-10 就修过（1b184f1）**，我们 10-07 采纳 keepalive 时没跟后续修复。
+- **归因②（无桥选项）**：runner 崩溃栈 = adb 空路径 `['', 'start-server']` → 桥没接上（Serial 非 alasaos）。为什么选不了？——session.log 显示「再生 args 配置」跑了，但 `ROOTFS_VERSION` **自 2026-09-24 恒 0.2.0**，`RootfsProvisioner` 判「已装」跳过解压 → 设备跑的还是 10-08 旧 rootfs（旧 regen_args 锚旧挂载位）→ 选项补挂失败。
+- **修复**（commit `c5403e4`，5 文件）：
+  1. 采纳上游 **1b184f1** 对位改写：Sticky.onStartCommand 去 ping（自愈归 onCreate）；Local/Daemon `@Volatile bound` 去重 + `releaseBinding()`（防 bindService 连接累积触发 AMS 上限）；
+  2. `ROOTFS_VERSION` → **0.3.0**；Provisioner 升级判定改「version|build_time」复合指纹（build_time 每次构建必变，防再忘递增）。
+- **验证**：Kotlin 静态自查（括号平衡/无残留调用点）；编译验证走 CI（run 42488289550 进行中）。真机复验等新包。
+- **教训**：采纳上游功能要连后续 bugfix 一起跟；rootfs 内容实质变化必须递增版本号（指纹兜底已内建）。
+
 ### 2026-11-08 · 打包 📦：首个「你的源」APK 出包全绿 + 两上游线侦察收官
 
 - **出包链路**：push e5eadcc（seed auto）后连爆两个真 bug，当日修复闭环：
