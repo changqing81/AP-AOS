@@ -20,3 +20,11 @@ commit `c5403e4`（5 文件）。CI：run 42488289550（勾 build_apk）进行�
 2. **用户重装新包**（marker 指纹必变 → 必然重新解压 rootfs，约 770MB 数分钟）
 3. 复验：桥选项出现 + 选桥后 runner 不再崩 + UI 不卡（onStartCommand 频率正常）
 4. Shinarin 四条移植候选仍待拍板（镜像切换 UI 那条现在更有价值——与本次「升级不生效」正交）
+
+## 更新（同日深夜）
+
+- **双症修复包已绿**：run 42489569950（0e53cde）——keepalive 自环 + rootfs 0.3.0 双修复齐备，**用户可直接装这个包复验**。
+- 编译红插曲：provisionFingerprint 的 companion 正则（BUILD_TIME_KEY）替换未生效 → 0e53cde 补上。
+- 追加采纳（已 push）：3e8d7ee9 wrapper 日志 O(1)（e1b18fb）、f6eb30f9 省电三件套（57baafe）。
+- 下一包：run 42490968509（57baafe）进行中。
+- Shinarin 剩余候选：9be72778（镜像切换 UI）、9a756584（Shizuku 引导）待拍板。

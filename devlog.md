@@ -2,6 +2,14 @@
 
 > 倒序排列，最新在上；按发版版本号分段。
 
+### 2026-11-08 深夜续 · 采纳 📦：wrapper 日志 O(1)（3e8d7ee9）+ WebView 省电三件套（f6eb30f9）
+
+- **背景**：用户指令「做完这些再合并一下上游的东西」。wess09 线复查无新增；Shinarin 线四条候选本轮采纳两条（均对位手工改写）。
+- **采纳一**（`e1b18fb`）：wrapper 日志统计 `_count_lines`（逐行 O(n)）→ `_log_size`（getsize O(1)），`log_lines`→`log_size` 全链路（wrapper 两份副本 + AlasRunController + AlasControlPanel 滚底 key 换字节数）。来源 Shinarin/ALAS-AOS `3e8d7ee9`。
+- **采纳二**（`57baafe`）：①新增 `AppForegroundTracker`（前后台态 + poke 唤醒）与 `AlasWebViewHolder`（退后台统一 pauseTimers）；②MainActivity onStart/onStop 接 resumeAll/pauseAll（切 tab 不暂停，保 pager 常驻决策）；③AlasRunController/HostState 轮询无任务且后台 4s→30s 退避，回前台立即恢复。来源 `f6eb30f9`。与上一条修复（keepalive 自环）同向叠加省电。
+- **过程坑**：`provisionFingerprint` 首次落盘时 companion 正则定义替换未生效（edit 匹配失败但流程继续），CI run 42488289550 编译红 `:133 Unresolved reference`——`0e53cde` 补定义后 run 42489569950 全绿（**双症修复包**，用户可直接装）；0e53cde 与 57baafe 已 push，下一包 run 42490968509 进行中（含省电移植）。
+- **剩余候选**：9be72778（镜像切换 UI，约 20 文件）、9a756584（Shizuku 引导）待拍板。
+
 ### 2026-11-08 深夜 · 修复 🚑：真机双症——保活自环拖死 UI + rootfs 升级包不生效（下拉无桥选项）
 
 - **背景**：用户装上首个绿包（49c891c）真机使用，报两症：①UI 严重卡顿带全部界面；②模拟器设置页截图/控制下拉没有「ALAS-AOS 桥」选项，runner 崩溃循环。随附三份日志包（launcher/alas）。
